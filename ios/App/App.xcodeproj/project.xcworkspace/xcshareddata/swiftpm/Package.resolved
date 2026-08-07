@@ -1,0 +1,60 @@
+{
+  "originHash" : "fe7bc7eff9d675698ab72f06ef07d224fe4adf2a12ac24b07e1fe4a5becbf182",
+  "pins" : [
+    {
+      "identity" : "capacitor-swift-pm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ionic-team/capacitor-swift-pm.git",
+      "state" : {
+        "revision" : "1f324fe7bdbdc8c5cc28bea48a231545a8c2e823",
+        "version" : "8.1.0"
+      }
+    },
+    {
+      "identity" : "ion-ios-filesystem",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ionic-team/ion-ios-filesystem.git",
+      "state" : {
+        "revision" : "c35d468ded28a19e6322de8553c21578455aa554",
+        "version" : "1.1.1"
+      }
+    },
+    {
+      "identity" : "ion-ios-geolocation",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ionic-team/ion-ios-geolocation.git",
+      "state" : {
+        "revision" : "5b722138d4ddc81275e0405acfd812a497519970",
+        "version" : "2.0.0"
+      }
+    },
+    {
+      "identity" : "purchases-hybrid-common",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/RevenueCat/purchases-hybrid-common.git",
+      "state" : {
+        "revision" : "6856d04423ade0663403bd3a0640ad016dcfc1c9",
+        "version" : "17.41.1"
+      }
+    },
+    {
+      "identity" : "purchases-ios-spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/RevenueCat/purchases-ios-spm",
+      "state" : {
+        "revision" : "828a464d12ff8fe4f633ef1b0116e76fd2a1e462",
+        "version" : "5.59.2"
+      }
+    },
+    {
+      "identity" : "stripe-ios-spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/stripe/stripe-ios-spm.git",
+      "state" : {
+        "revision" : "551b06f6f6e7e34a3acb069458184907a30884fd",
+        "version" : "25.3.1"
+      }
+    }
+  ],
+  "version" : 3
+}

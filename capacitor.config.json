@@ -1,0 +1,31 @@
+{
+    "appId": "com.eliteels.driver",
+    "appName": "ELS Driver",
+    "webDir": "dist",
+    "server": {
+        "androidScheme": "https"
+    },
+    "ios": {
+        "allowsLinkPreview": false,
+        "scrollEnabled": false,
+        "limitsNavigationsToAppBoundDomains": true,
+        "preferredContentMode": "mobile"
+    },
+    "plugins": {
+        "StatusBar": {
+            "style": "Light",
+            "backgroundColor": "#000000"
+        },
+        "Geolocation": {
+            "requestPermissions": true
+        },
+        "PushNotifications": {
+            "presentationOptions": ["badge", "sound", "alert"]
+        },
+        "Haptics": {},
+        "Keyboard": {
+            "resize": "none",
+            "style": "light"
+        }
+    }
+}

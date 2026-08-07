@@ -1,0 +1,1 @@
+ALTER TABLE global_users ADD COLUMN IF NOT EXISTS push_token TEXT;
