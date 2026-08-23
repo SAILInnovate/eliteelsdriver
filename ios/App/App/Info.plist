@@ -22,66 +22,39 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-
-	<!-- ======================== -->
-	<!-- LOCATION PERMISSIONS     -->
-	<!-- ======================== -->
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Your location data is required to look for the nearest available chauffeurs. Please choose 'Allow while using app', and when you're in another city we'll send you a notification if Elite serves it.</string>
-	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Elite ELS uses your location in the background to track your ride in real time and ensure your driver can find you.</string>
-	<key>NSLocationAlwaysUsageDescription</key>
-	<string>Elite ELS uses your location in the background to provide live ride tracking and accurate ETAs.</string>
-
-	<!-- ======================== -->
-	<!-- PUSH NOTIFICATIONS       -->
-	<!-- ======================== -->
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>location</string>
-		<string>remote-notification</string>
-	</array>
-
-	<!-- ======================== -->
-	<!-- CAMERA (Profile Photo)   -->
-	<!-- ======================== -->
-	<key>NSCameraUsageDescription</key>
-	<string>ELS Driver uses your camera to record vehicle condition before and after each shift.</string>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>ELS Driver uses your microphone to capture audio during vehicle condition recordings.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>ELS Driver accesses your photo library to attach images to vehicle reports.</string>
-
-	<!-- ======================== -->
-	<!-- FACE ID (Apple Pay)      -->
-	<!-- ======================== -->
-	<key>NSFaceIDUsageDescription</key>
-	<string>Elite ELS uses Face ID to securely authorise payments.</string>
-
-	<!-- ======================== -->
-	<!-- CONTACTS (optional)      -->
-	<!-- ======================== -->
-	<key>NSContactsUsageDescription</key>
-	<string>Elite ELS can access your contacts to quickly book rides for friends and family.</string>
-
-	<!-- ======================== -->
-	<!-- APP TRANSPORT SECURITY   -->
-	<!-- ======================== -->
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsArbitraryLoads</key>
-		<true/>
-	</dict>
-
-	<!-- ======================== -->
-	<!-- UI CONFIGURATION         -->
-	<!-- ======================== -->
 	<key>INIntentsSupported</key>
 	<array>
 		<string>Intent</string>
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>ELS Driver uses your camera to record vehicle condition before and after each shift.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>ELS Elite can access your contacts to quickly book rides for friends and family.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>ELS Elite uses Face ID to securely authorise payments.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Please choose “Always Allow”. ELS Driver needs background location to keep your passenger updated when the app is not on screen — with “While Using the App” they lose sight of you the moment you switch away. Location is only shared while you are on shift.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>Please choose “Always Allow”. ELS Driver needs background location to keep your passenger updated when the app is not on screen. Location is only shared while you are on shift.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>ELS Driver shares your location while you are on shift so jobs can be dispatched to you and your passenger can follow the journey. Nothing is shared while you are offline.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>ELS Driver uses your microphone to speak to passengers in-app and to capture audio during vehicle condition recordings.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>ELS Driver accesses your photo library to attach images to vehicle reports.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+		<string>remote-notification</string>
+		<string>audio</string>
+	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
@@ -92,6 +65,8 @@
 	</array>
 	<key>UIRequiresFullScreen</key>
 	<true/>
+	<key>UIStatusBarStyle</key>
+	<string>UIStatusBarStyleLightContent</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
@@ -105,7 +80,5 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
-	<key>UIStatusBarStyle</key>
-	<string>UIStatusBarStyleLightContent</string>
 </dict>
 </plist>
