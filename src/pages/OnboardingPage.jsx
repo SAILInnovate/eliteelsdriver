@@ -171,7 +171,7 @@ export default function OnboardingPage() {
         >
             {/* Background video handled by shared layer in App.jsx */}
             <Helmet>
-                <title>Elite ELS</title>
+                <title>ELS Elite</title>
             </Helmet>
 
             {/* Top section — logo + input in the upper third */}

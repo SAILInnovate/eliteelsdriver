@@ -21,6 +21,10 @@ import DriverProfileDrawer from '../components/DriverProfileDrawer';
 import FlightStatusCard from '../components/FlightStatusCard';
 import GuestBrief from '../components/GuestBrief';
 import RideChat from '../components/RideChat';
+import CallOverlay from '../components/CallOverlay';
+import JourneyControls from '../components/JourneyControls';
+import { readJourney, forwardAction, backAction, stepOutAction, applyAction, describeEvent } from '../lib/journey';
+import { useRideCall } from '../lib/rideCall';
 import OpsChat from '../components/OpsChat';
 import { CONDUCT_VERSION, CONDUCT_TITLE, CONDUCT_INTRO, CONDUCT_BODY } from '../content/clientConduct';
 
@@ -256,6 +260,41 @@ export default function PlayerPortal() {
   const [autoFollow, setAutoFollow] = useState(true);
   const [showProfile, setShowProfile] = useState(false);
   const [showChat, setShowChat] = useState(false);
+
+  // Voice call with the passenger — WebRTC peer-to-peer, no carrier minutes.
+  // Mounted for the whole active ride so an incoming call rings wherever the
+  // driver is in the app.
+  const call = useRideCall({
+    rideId: activeRide?.id,
+    userId: user?.id,
+    role: 'driver',
+    displayName: user?.user_metadata?.full_name || 'Driver',
+    enabled: !!activeRide?.id && !!user?.id
+  });
+
+  const phonePassenger = () => {
+    call.dismissCall();
+    // '+448000000000' used to stand in here — not a dialable number, so the
+    // fallback silently failed. Only offered when we actually hold a number.
+    if (activeRide?.passenger_phone) {
+      window.location.href = `tel:${activeRide.passenger_phone}`;
+    }
+  };
+
+  // Falls back to the carrier line when the passenger's app isn't connected,
+  // and again from the call screen if the connection can't be negotiated.
+  const callPassenger = () => {
+    triggerHaptic();
+    if (call.peerOnline) { call.startCall(); return; }
+    // Show the call surface and explain, rather than opening the dialler with
+    // no sign the app tried anything.
+    call.reportUnavailable(
+      activeRide?.passenger_phone
+        ? 'The passenger’s app isn’t connected right now. You can reach them by phone instead.'
+        : 'The passenger’s app isn’t connected, and we don’t have a number for them. Contact Operations.'
+    );
+  };
+
   const [showOpsChat, setShowOpsChat] = useState(false);
   const [showAuditLog, setShowAuditLog] = useState(false);
   const [customLogText, setCustomLogText] = useState('');
@@ -345,7 +384,7 @@ export default function PlayerPortal() {
   };
   
   usePushNotifications();
-  useBackgroundLocation(shiftState === 'ONLINE', activeRide?.id);
+  const locationStatus = useBackgroundLocation(shiftState === 'ONLINE', activeRide?.id);
 
   // Fetch Route from OSRM
   useEffect(() => {
@@ -701,6 +740,75 @@ export default function PlayerPortal() {
     }
   };
 
+  // One structured row per thing that happened on the job — including steps the
+  // driver took back — so Operations sees the real sequence, not just where the
+  // ride ended up. The chat line is the same story in human words.
+  const logRideEvent = async (event) => {
+    if (!activeRide || !user) return;
+    try {
+      await supabase.from('ride_events').insert({
+        ride_id: activeRide.id,
+        actor_id: user.id,
+        actor_role: 'driver',
+        ...event
+      });
+    } catch (err) {
+      console.warn('Failed to write ride event:', err);
+    }
+    try {
+      await supabase.from('ride_messages').insert({
+        ride_id: activeRide.id,
+        sender_id: user.id,
+        sender_role: 'driver',
+        message: `[SYSTEM] ${describeEvent(event)}`
+      });
+    } catch (err) {
+      console.warn('Failed to write status message:', err);
+    }
+  };
+
+  // Every journey move — forward, back, or an unplanned stop — goes through
+  // here, so the ride row, the passenger's trail and the event log can't drift.
+  const runJourneyAction = async (key) => {
+    if (!activeRide || !user) return;
+    triggerHaptic();
+
+    // Completion keeps its existing path: it also runs the OSRM distance
+    // calculation and tears the active ride down.
+    if (key === 'complete') {
+      await logRideEvent({
+        event_type: 'status_change', from_state: activeRide.status,
+        to_state: 'completed', direction: 'forward'
+      });
+      await updateRideStatus('completed');
+      return;
+    }
+
+    const coords = hasFix && location ? { lat: location[0], lng: location[1] } : null;
+    const result = applyAction(activeRide, key, { coords });
+    if (!result) return;
+
+    const { error } = await supabase.from('rides').update(result.ridePatch).eq('id', activeRide.id);
+    if (error) {
+      console.warn('Journey update failed:', error);
+      return;
+    }
+    setActiveRide(prev => ({ ...prev, ...result.ridePatch }));
+    await logRideEvent(result.event);
+
+    // Arriving at pickup still announces itself to the passenger
+    if (key === 'arrive') {
+      try {
+        await supabase.from('ride_messages').insert({
+          ride_id: activeRide.id, sender_id: user.id,
+          sender_role: 'driver', message: 'I am outside'
+        });
+      } catch (err) {
+        console.warn('Failed to send arrival message:', err);
+      }
+    }
+  };
+
   // Driver accepts the Client Conduct condition for this specific booking,
   // before any client/route details are revealed. Recorded per-ride.
   const acknowledgeConduct = async () => {
@@ -821,7 +929,9 @@ export default function PlayerPortal() {
       if (pickupCoords) {
         const dist = getDistanceMiles(location, pickupCoords);
         if (dist < 0.1) {
-          updateRideStatus('arrived');
+          // Routed through the journey machine so an automatic arrival lands in
+          // the event log the same as a swiped one, and stays reversible.
+          runJourneyAction('arrive');
           logSystemAudit('Auto-arrived via geofence');
         }
       }
@@ -1178,7 +1288,7 @@ export default function PlayerPortal() {
           {/* Live flight status — airport pickups only */}
           {activeRide.metadata?.flight_number && (
             <div style={{ marginBottom: '16px' }}>
-              <FlightStatusCard flightNumber={activeRide.metadata.flight_number} pickupTime={activeRide.scheduled_at} />
+              <FlightStatusCard flightNumber={activeRide.metadata.flight_number} pickupTime={activeRide.scheduled_at} rideId={activeRide.id} />
             </div>
           )}
 
@@ -1251,7 +1361,7 @@ export default function PlayerPortal() {
 
           <motion.button 
             whileTap={{ scale: 0.96 }}
-            onClick={() => { triggerHaptic(); window.location.href = `tel:${activeRide.passenger_phone || '+448000000000'}`; }} 
+            onClick={callPassenger} 
             style={{ flex: 1, height: '60px', background: '#F8F8F8', border: '1px solid #E0E0E0', borderRadius: '14px', color: '#000', display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center', justifyContent: 'center', fontSize: '0.85rem', fontWeight: 700, letterSpacing: '0.5px' }}
           >
             <Phone size={18}/> Call
@@ -1311,48 +1421,16 @@ export default function PlayerPortal() {
           />
         </div>
 
-        {/* Action Swipe — the required next step, made unmissable so drivers
-            don't forget to log arrival/POB (which corrupts billing timestamps) */}
-        <div style={{ marginTop: '16px', position: 'relative', padding: '20px', borderRadius: '20px', background: '#FFFFFF', border: '1px solid var(--color-gold, #D4CFC9)', boxShadow: '0 8px 24px rgba(212,207,201,0.2)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', marginBottom: '16px' }}>
-            <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#8A7355', animation: 'elsPulse 1.8s ease-in-out infinite' }} />
-            <span style={{ fontSize: '0.85rem', fontWeight: 800, letterSpacing: '2px', textTransform: 'uppercase', color: '#8A7355' }}>
-              Required next step
-            </span>
-          </div>
-          {isDispatched && <SwipeButton resetOnComplete text="Start Journey to Pickup" onComplete={() => { updateRideStatus('en_route'); logSystemAudit('Driver en route to pickup'); }} />}
-          {isEnRoute && <SwipeButton resetOnComplete text="Arrived at Pickup" onComplete={() => { updateRideStatus('arrived'); logSystemAudit('Driver is on location'); }} />}
-          {isArrived && <SwipeButton resetOnComplete text="Passenger On Board" onComplete={() => { updateRideStatus('in_progress'); logSystemAudit('Passenger On Board (POB)'); }} />}
-          {isInProgress && (() => {
-            const waypoints = activeRide?.waypoints || activeRide?.metadata?.waypoints || [];
-            const currentStopIndex = activeRide?.metadata?.current_stop_index || 0;
-            
-            if (currentStopIndex < waypoints.length) {
-              const currentStop = waypoints[currentStopIndex];
-              return (
-                <SwipeButton 
-                  resetOnComplete 
-                  text={`Arrived at ${currentStop.name.substring(0, 15)}${currentStop.name.length > 15 ? '...' : ''}`} 
-                  onComplete={async () => { 
-                    const newMetadata = { ...activeRide.metadata, current_stop_index: currentStopIndex + 1 };
-                    await supabase.from('rides').update({ metadata: newMetadata }).eq('id', activeRide.id);
-                    setActiveRide(prev => ({ ...prev, metadata: newMetadata }));
-                    logSystemAudit(`Arrived at Stop: ${currentStop.name}`);
-                  }} 
-                />
-              );
-            }
-            
-            return (
-              <SwipeButton 
-                resetOnComplete 
-                text="Complete Booking" 
-                variant="accent" 
-                onComplete={() => { updateRideStatus('completed'); }} 
-              />
-            );
-          })()}
-        </div>
+        {/* The journey controls. Forward is the required next step; the two
+            slim swipes underneath let the driver follow what the passenger
+            actually does — take a step back, or log an unplanned stop. */}
+        <JourneyControls
+          forward={forwardAction(activeRide)}
+          back={backAction(activeRide)}
+          stepOut={stepOutAction(activeRide)}
+          waitingSince={readJourney(activeRide).openStop?.off_at || null}
+          onAction={runJourneyAction}
+        />
 
         {/* No accept/decline — assigned jobs go through Operations */}
         <div style={{ marginTop: '16px' }}>
@@ -1745,6 +1823,43 @@ export default function PlayerPortal() {
 
         {shiftState === 'ONLINE' && (
           <>
+            {locationStatus.permissionDenied ? (
+              <motion.button
+                initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={() => { triggerHaptic(); locationStatus.openSettings(); }}
+                style={{
+                  width: '100%', padding: '14px 16px', marginBottom: '12px',
+                  background: 'rgba(179,38,30,0.08)', border: '1px solid rgba(179,38,30,0.35)',
+                  borderRadius: '8px', color: '#B3261E', textAlign: 'left',
+                  display: 'flex', alignItems: 'flex-start', gap: '10px'
+                }}
+              >
+                <AlertTriangle size={16} color="#B3261E" style={{ flexShrink: 0, marginTop: '2px' }} />
+                <span style={{ fontSize: '0.8125rem', lineHeight: 1.45 }}>
+                  <strong style={{ display: 'block', letterSpacing: '0.5px', textTransform: 'uppercase', fontSize: '0.75rem', marginBottom: '3px' }}>
+                    Location Not Shared
+                  </strong>
+                  Your passenger cannot see you. Tap here, then set Location to
+                  <strong> Always</strong> — “While Using the App” stops the moment you leave ELS Driver.
+                </span>
+              </motion.button>
+            ) : (
+              <div
+                style={{
+                  width: '100%', padding: '10px 14px', marginBottom: '12px',
+                  background: 'rgba(138,115,85,0.06)', border: '1px solid rgba(138,115,85,0.25)',
+                  borderRadius: '8px', color: '#8A7355',
+                  display: 'flex', alignItems: 'flex-start', gap: '8px'
+                }}
+              >
+                <MapPin size={14} color="#8A7355" style={{ flexShrink: 0, marginTop: '2px' }} />
+                <span style={{ fontSize: '0.75rem', lineHeight: 1.45 }}>
+                  Sharing your location. Keep ELS Driver running in the background — closing
+                  it from the app switcher stops your passenger seeing you.
+                </span>
+              </div>
+            )}
             {renderActiveJob()}
             {!activeRide && (
               <motion.div 
@@ -2128,6 +2243,26 @@ export default function PlayerPortal() {
           signOut();
         }}
       />
+
+      {/* Voice call with passenger */}
+      <AnimatePresence>
+        {call.inCall && (
+          <CallOverlay
+            status={call.status}
+            peerName={call.peerName || activeRide?.passenger_name || activeRide?.metadata?.client_name}
+            subtitle={activeRide?.pickup_address?.split(',')[0]}
+            muted={call.muted}
+            duration={call.duration}
+            note={call.note}
+            onAccept={call.acceptCall}
+            onDecline={call.declineCall}
+            onEnd={call.endCall}
+            onToggleMute={call.toggleMute}
+            onCallByPhone={activeRide?.passenger_phone ? phonePassenger : undefined}
+            onDismiss={call.dismissCall}
+          />
+        )}
+      </AnimatePresence>
 
       {/* Ride Chat UI */}
       <AnimatePresence>

@@ -20,14 +20,25 @@ const localTime = (iso) => (iso && iso.length >= 16 ? iso.slice(11, 16) : null);
 // are in different (mislabelled) timezones so elapsed-time maths would lie
 const PROGRESS = { scheduled: 0.06, active: 0.55, landed: 1, cancelled: 0, incident: 0.55, diverted: 0.55 };
 
-export default function FlightStatusCard({ flightNumber, pickupTime, accent = '#8A7355', border = '#E8E4DE' }) {
+export default function FlightStatusCard({ flightNumber, pickupTime, rideId, accent = '#8A7355', border = '#E8E4DE' }) {
   const [flight, setFlight] = useState(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     if (!flightNumber) return;
     let cancelled = false;
-    const fetchStatus = async () => {
+
+    // Shape a ride_flight_status row like the flight-tracker response, so the
+    // rendering below is identical whichever source the data came from.
+    const fromRow = (row) => row && {
+      flight_status: row.flight_status,
+      flight_date: row.flight_date,
+      departure: row.departure,
+      arrival: row.arrival,
+      airline: row.airline,
+    };
+
+    const fetchDirect = async () => {
       try {
         const { data, error } = await supabase.functions.invoke('flight-tracker', {
           body: { flight_number: flightNumber, pickup_time: pickupTime || null }
@@ -39,10 +50,42 @@ export default function FlightStatusCard({ flightNumber, pickupTime, accent = '#
         if (!cancelled) setFailed(true);
       }
     };
-    fetchStatus();
-    const id = setInterval(fetchStatus, 5 * 60 * 1000);
-    return () => { cancelled = true; clearInterval(id); };
-  }, [flightNumber, pickupTime]);
+
+    // No ride yet (a lookup while booking) — nothing server-side is tracking
+    // this flight, so ask the API directly.
+    if (!rideId) {
+      fetchDirect();
+      const id = setInterval(fetchDirect, 5 * 60 * 1000);
+      return () => { cancelled = true; clearInterval(id); };
+    }
+
+    // With a ride, read the shared row the flight-watch cron maintains and let
+    // realtime push updates. One API call per ride instead of one per viewer
+    // per five minutes, and it stays correct while nobody is watching.
+    const load = async () => {
+      const { data: row } = await supabase
+        .from('ride_flight_status').select('*').eq('ride_id', rideId).maybeSingle();
+      if (cancelled) return;
+      if (row?.flight_status) { setFlight(fromRow(row)); setFailed(false); }
+      else fetchDirect(); // poller has not reached this ride yet
+    };
+    load();
+
+    const channel = supabase.channel(`flight-status-${rideId}`)
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'ride_flight_status',
+        filter: `ride_id=eq.${rideId}`
+      }, (payload) => {
+        const next = fromRow(payload.new);
+        if (next?.flight_status) { setFlight(next); setFailed(false); }
+      })
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(channel);
+    };
+  }, [flightNumber, pickupTime, rideId]);
 
   if (!flightNumber) return null;
 

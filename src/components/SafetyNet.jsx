@@ -20,7 +20,7 @@ export class ErrorBoundary extends Component {
   }
 
   componentDidCatch(error, errorInfo) {
-    console.error('Elite ELS crash caught:', error, errorInfo);
+    console.error('ELS Elite crash caught:', error, errorInfo);
   }
 
   render() {
@@ -68,7 +68,7 @@ export class ErrorBoundary extends Component {
             position: 'absolute', bottom: 'calc(env(safe-area-inset-bottom, 0px) + 24px)',
             fontSize: '0.5625rem', color: '#F5F5F5', letterSpacing: '2px'
           }}>
-            ELITE ELS
+            ELS ELITE
           </div>
         </div>
       );
@@ -156,7 +156,7 @@ export function OfflineScreen() {
         position: 'absolute', bottom: 'calc(env(safe-area-inset-bottom, 0px) + 24px)',
         fontSize: '0.5625rem', color: '#FFFFFF', letterSpacing: '2px'
       }}>
-        ELITE ELS
+        ELS ELITE
       </div>
     </motion.div>
   );

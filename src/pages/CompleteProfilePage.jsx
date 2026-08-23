@@ -343,7 +343,7 @@ export default function CompleteProfilePage({ onComplete }) {
             }}
         >
             <Helmet>
-                <title>Elite ELS</title>
+                <title>ELS Elite</title>
             </Helmet>
 
             {/* Upper-third layout — the NDA step fills the viewport so the CTA stays pinned */}
