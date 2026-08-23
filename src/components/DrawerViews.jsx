@@ -409,7 +409,7 @@ export function PaymentCreditsView({ onClose }) {
           setupIntentClientSecret: setupData.setup_intent_client_secret,
           customerEphemeralKeySecret: setupData.ephemeral_key,
           customerId: setupData.customer_id,
-          merchantDisplayName: 'Elite ELS',
+          merchantDisplayName: 'ELS Elite',
           style: 'alwaysDark',
           enableApplePay: true,
           enableGooglePay: false,
@@ -1003,8 +1003,8 @@ export function GiftCardsView({ onClose }) {
     haptic();
     try {
       await CapShare.share({
-        title: 'Elite ELS Gift Card',
-        text: `I've sent you a £${cards[selectedCard].amount} Elite ELS Gift Card! Redeem it using code: ${purchasedCode}`,
+        title: 'ELS Elite Gift Card',
+        text: `I've sent you a £${cards[selectedCard].amount} ELS Elite Gift Card! Redeem it using code: ${purchasedCode}`,
         url: 'https://app.elite-els.co.uk',
         dialogTitle: 'Share Gift Card'
       });
@@ -1016,7 +1016,7 @@ export function GiftCardsView({ onClose }) {
   const handleRedeem = () => {
     haptic();
     // Simulate redemption
-    alert(`Successfully added £${cards[selectedCard].amount} to your Elite ELS credits!`);
+    alert(`Successfully added £${cards[selectedCard].amount} to your ELS Elite credits!`);
     onClose();
   };
 
@@ -1079,7 +1079,7 @@ export function GiftCardsView({ onClose }) {
       ) : (
         <>
           <div style={{ fontSize: '0.8125rem', color: '#888', marginBottom: '32px', lineHeight: 1.6, textAlign: 'center' }}>
-            Give the gift of seamless, ultra-premium travel. Elite ELS Gift Cards never expire and can be instantly applied to any booking.
+            Give the gift of seamless, ultra-premium travel. ELS Elite Gift Cards never expire and can be instantly applied to any booking.
           </div>
 
           <div 
