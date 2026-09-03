@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Upload, Check, ChevronRight, Globe, User, FileText, Camera, Shield, CreditCard, LogOut, Car, Briefcase } from 'lucide-react';
+import { X, Upload, Check, ChevronRight, Globe, User, FileText, Camera, Shield, CreditCard, LogOut, Car, Briefcase, Star } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Haptics, ImpactStyle } from '@capacitor/haptics';
 
-const LANG_LABELS = { en: 'English', de: 'Deutsch', es: 'Español', fr: 'Français', ar: 'العربية', ur: 'اردو' };
+const LANG_LABELS = { en: 'English', de: 'Deutsch', es: 'Español', fr: 'Français', ar: 'العربية' };
 
 const DOC_KEYS = [
   { key: 'driving_licence', icon: CreditCard, tKey: 'drivingLicence' },
@@ -41,6 +41,8 @@ export default function DriverProfileDrawer({ open, onClose, onSignOut, profile 
   const driverName = user?.user_metadata?.full_name || user?.phone || 'Driver';
 
   const [orgName, setOrgName] = useState(null);
+  // Client ratings — aggregates only. Individual comments stay with ops.
+  const [rating, setRating] = useState(null);
   const [joinCode, setJoinCode] = useState('');
   const [isJoining, setIsJoining] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
@@ -57,6 +59,14 @@ export default function DriverProfileDrawer({ open, onClose, onSignOut, profile 
       setOrgName(null);
     }
   }, [open, user, profile?.subcontractor_id]);
+
+  // My star rating from the clients I have driven
+  useEffect(() => {
+    if (!open || !user) return;
+    supabase.rpc('get_my_driver_rating').then(({ data }) => {
+      if (data?.ok) setRating(data);
+    });
+  }, [open, user]);
 
   // Load existing docs
   useEffect(() => {
@@ -141,7 +151,7 @@ export default function DriverProfileDrawer({ open, onClose, onSignOut, profile 
                 <div>
                   <motion.div initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '2.5px', textTransform: 'uppercase', color: '#8A7355', marginBottom: '6px' }}>Chauffeur</motion.div>
                   <motion.h2 initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} style={{ fontFamily: 'var(--font-display), serif', fontSize: '1.75rem', fontWeight: 500, color: '#000', lineHeight: 1.1, marginBottom: '6px' }}>{t('driverProfile')}</motion.h2>
-                  <motion.p initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.05 }} style={{ fontSize: '0.8125rem', color: '#9A938A', letterSpacing: '0.3px' }}>{driverName}</motion.p>
+                  <motion.p initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.05 }} style={{ fontSize: '0.8125rem', color: '#6B6B6B', letterSpacing: '0.3px' }}>{driverName}</motion.p>
                 </div>
                 <motion.button whileTap={{ scale: 0.9 }} onClick={onClose} style={{ background: 'transparent', border: '1px solid #E8E4DE', borderRadius: '50%', width: '34px', height: '34px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', flexShrink: 0, marginTop: '2px' }}>
                   <X size={15} color="#000" />
@@ -181,7 +191,7 @@ export default function DriverProfileDrawer({ open, onClose, onSignOut, profile 
                 <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }} style={{ marginBottom: '24px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
                     <div style={{ width: '3px', height: '16px', background: '#D4CFC9', borderRadius: '2px' }} />
-                    <span style={{ fontSize: '0.7rem', fontWeight: 700, letterSpacing: '2px', color: '#888', textTransform: 'uppercase' }}>Driver Status</span>
+                    <span style={{ fontSize: '0.7rem', fontWeight: 700, letterSpacing: '2px', color: '#555', textTransform: 'uppercase' }}>Driver Status</span>
                   </div>
 
                   <div style={{ background: '#FFF', border: '1px solid #E8E4DE', borderRadius: '14px', padding: '18px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -190,7 +200,7 @@ export default function DriverProfileDrawer({ open, onClose, onSignOut, profile 
                       const s = STATUS_STYLES[profile.status] || STATUS_STYLES.pending_review;
                       return (
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontSize: '0.8125rem', color: '#9A938A' }}>Application</span>
+                          <span style={{ fontSize: '0.8125rem', color: '#6B6B6B' }}>Application</span>
                           <span style={{ padding: '4px 12px', borderRadius: '8px', fontSize: '0.7rem', fontWeight: 700, letterSpacing: '1px', textTransform: 'uppercase', color: s.color, background: s.bg, border: `1px solid ${s.border}` }}>{s.label}</span>
                         </div>
                       );
@@ -198,7 +208,7 @@ export default function DriverProfileDrawer({ open, onClose, onSignOut, profile 
 
                     {/* ELS plate */}
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '0.8125rem', color: '#9A938A' }}>ELS Plate</span>
+                      <span style={{ fontSize: '0.8125rem', color: '#6B6B6B' }}>ELS Plate</span>
                       {profile.els_plate ? (
                         <span style={{ fontWeight: 600, letterSpacing: '2px', color: '#000', fontSize: '0.9375rem' }}>{profile.els_plate}</span>
                       ) : (
@@ -206,10 +216,35 @@ export default function DriverProfileDrawer({ open, onClose, onSignOut, profile 
                       )}
                     </div>
 
+                    {/* Client rating — a new chauffeur has none yet, and that is
+                        stated plainly rather than shown as a zero. */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.8125rem', color: '#6B6B6B' }}>Client Rating</span>
+                      {rating?.count > 0 ? (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ display: 'flex', gap: '1px' }}>
+                            {[1, 2, 3, 4, 5].map(n => (
+                              <Star key={n} size={13} strokeWidth={1.5}
+                                fill={n <= Math.round(rating.average) ? '#8A7355' : 'none'}
+                                color={n <= Math.round(rating.average) ? '#8A7355' : '#D8D4CE'} />
+                            ))}
+                          </span>
+                          <span style={{ fontWeight: 700, color: '#000', fontSize: '0.9375rem' }}>
+                            {Number(rating.average).toFixed(2)}
+                          </span>
+                          <span style={{ fontSize: '0.7rem', color: '#999' }}>
+                            ({rating.count})
+                          </span>
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: '0.75rem', color: '#666' }}>No ratings yet</span>
+                      )}
+                    </div>
+
                     {/* Own vehicle */}
                     {profile.owns_vehicle && (
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: '0.8125rem', color: '#9A938A' }}>My Vehicle</span>
+                        <span style={{ fontSize: '0.8125rem', color: '#6B6B6B' }}>My Vehicle</span>
                         <span style={{ fontSize: '0.85rem', color: '#000', fontWeight: 600, textAlign: 'right' }}>
                           {profile.vehicle_make_model || 'Own vehicle'}{profile.vehicle_reg ? ` • ${profile.vehicle_reg}` : ''}
                         </span>
@@ -219,7 +254,7 @@ export default function DriverProfileDrawer({ open, onClose, onSignOut, profile 
                     {/* Driving score — maintained by ops, drives pay */}
                     {profile.driving_score != null && (
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontSize: '0.8125rem', color: '#9A938A' }}>Driving Score</span>
+                        <span style={{ fontSize: '0.8125rem', color: '#6B6B6B' }}>Driving Score</span>
                         <span style={{ fontWeight: 700, color: '#8A7355', fontSize: '0.9375rem' }}>{Number(profile.driving_score).toFixed(0)}</span>
                       </div>
                     )}
@@ -230,7 +265,7 @@ export default function DriverProfileDrawer({ open, onClose, onSignOut, profile 
               {/* Organization Section */}
               <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }} style={{ marginBottom: '24px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
-                  <span style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '2px', color: '#9A938A', textTransform: 'uppercase' }}>Organisation</span>
+                  <span style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '2px', color: '#6B6B6B', textTransform: 'uppercase' }}>Organisation</span>
                 </div>
 
                 <div style={{ background: '#FFF', border: '1px solid #E8E4DE', borderRadius: '14px', padding: '18px' }}>
@@ -241,7 +276,7 @@ export default function DriverProfileDrawer({ open, onClose, onSignOut, profile 
                           <Briefcase size={16} color="#8A7355" />
                         </div>
                         <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: '0.8125rem', color: '#9A938A' }}>Joined Fleet</div>
+                          <div style={{ fontSize: '0.8125rem', color: '#6B6B6B' }}>Joined Fleet</div>
                           <div style={{ fontWeight: 600, color: '#000', fontSize: '0.95rem' }}>{orgName || 'Loading...'}</div>
                         </div>
                       </div>
@@ -304,7 +339,7 @@ export default function DriverProfileDrawer({ open, onClose, onSignOut, profile 
               {/* Documents Section */}
               <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
-                  <span style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '2px', color: '#9A938A', textTransform: 'uppercase' }}>{t('myDocuments')}</span>
+                  <span style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '2px', color: '#6B6B6B', textTransform: 'uppercase' }}>{t('myDocuments')}</span>
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -357,7 +392,7 @@ export default function DriverProfileDrawer({ open, onClose, onSignOut, profile 
               {/* Language Section */}
               <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} style={{ marginTop: '24px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
-                  <span style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '2px', color: '#9A938A', textTransform: 'uppercase' }}>{t('settings')}</span>
+                  <span style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '2px', color: '#6B6B6B', textTransform: 'uppercase' }}>{t('settings')}</span>
                 </div>
 
                 <motion.button
