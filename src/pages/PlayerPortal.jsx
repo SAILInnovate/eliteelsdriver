@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MapContainer, TileLayer, Marker, Polyline, useMap } from 'react-leaflet';
@@ -11,6 +11,7 @@ import { openWhatsApp, OFFICE_WHATSAPP_DISPLAY } from '../lib/capacitor';
 import useLocation from '../hooks/useLocation';
 import useBackgroundLocation from '../hooks/useBackgroundLocation';
 import { Haptics, ImpactStyle } from '@capacitor/haptics';
+import { App as CapacitorApp } from '@capacitor/app';
 import { Camera, Check, ChevronRight, Fuel, AlertTriangle, Copy, Power, Car, History, Clock, ChevronLeft, Video, X, User, MessageSquare, MessageCircle, Phone, Headphones, FileEdit, ExternalLink, Plus, Receipt, Navigation, Trash2, PoundSterling, MapPin } from 'lucide-react';
 import { suggestCongestionCharge, CONGESTION_CHARGE, ULEZ_CHARGE } from '../lib/londonZones';
 import usePushNotifications from '../hooks/usePushNotifications';
@@ -27,6 +28,19 @@ import { readJourney, forwardAction, backAction, stepOutAction, applyAction, des
 import { useRideCall } from '../lib/rideCall';
 import OpsChat from '../components/OpsChat';
 import { CONDUCT_VERSION, CONDUCT_TITLE, CONDUCT_INTRO, CONDUCT_BODY } from '../content/clientConduct';
+
+// Browser notification, for the web build only — on device the same event
+// arrives as a real push (see the ride_messages / support_messages triggers).
+const webNotify = (title, body) => {
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'granted') {
+    new Notification(title, { body });
+  } else if (Notification.permission !== 'denied') {
+    Notification.requestPermission().then((permission) => {
+      if (permission === 'granted') new Notification(title, { body });
+    });
+  }
+};
 
 const parseWKBPoint = (hex) => {
   if (!hex || hex.length < 42) return null;
@@ -192,7 +206,7 @@ const VideoRecorderOverlay = ({ onUploadComplete, onClose }) => {
         <>
           <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: 'linear' }} style={{ width: '48px', height: '48px', border: '3px solid rgba(0,0,0,0.1)', borderTopColor: '#8A7355', borderRadius: '50%', marginBottom: '20px' }} />
           <div style={{ fontSize: '0.6875rem', letterSpacing: '3px', color: '#000', fontWeight: 600 }}>UPLOADING VIDEO</div>
-          <div style={{ fontSize: '0.75rem', color: '#888', marginTop: '8px' }}>Keep the app open</div>
+          <div style={{ fontSize: '0.75rem', color: '#555', marginTop: '8px' }}>Keep the app open</div>
         </>
       ) : (
         <>
@@ -200,11 +214,11 @@ const VideoRecorderOverlay = ({ onUploadComplete, onClose }) => {
             <Video size={24} color="#8A7355" />
           </div>
           <div style={{ fontSize: '0.9375rem', color: '#000', fontWeight: 600, marginBottom: '6px' }}>Vehicle Condition Video</div>
-          <div style={{ fontSize: '0.75rem', color: '#888', textAlign: 'center', lineHeight: 1.6, marginBottom: '28px' }}>
+          <div style={{ fontSize: '0.75rem', color: '#555', textAlign: 'center', lineHeight: 1.6, marginBottom: '28px' }}>
             Record a walkaround of the vehicle using the camera.
           </div>
           <button onClick={openCamera} style={{ padding: '16px 40px', background: '#000', borderRadius: '16px', color: '#FFF', fontWeight: 600, fontSize: '0.8125rem', letterSpacing: '2px', textTransform: 'uppercase', border: 'none' }}>Open Camera</button>
-          <button onClick={onClose} style={{ marginTop: '14px', padding: '12px 40px', background: 'transparent', border: 'none', color: '#888', fontWeight: 500, fontSize: '0.875rem' }}>Cancel</button>
+          <button onClick={onClose} style={{ marginTop: '14px', padding: '12px 40px', background: 'transparent', border: 'none', color: '#555', fontWeight: 500, fontSize: '0.875rem' }}>Cancel</button>
         </>
       )}
     </div>
@@ -245,6 +259,10 @@ export default function PlayerPortal() {
   const [activeRide, setActiveRide] = useState(null);
   const [shiftData, setShiftData] = useState({ carReg: '', hasProblem: false, needsFuel: false, videoUrl: null, preNotes: '' });
   const [videoRecorded, setVideoRecorded] = useState(false);
+  const [savingVehicle, setSavingVehicle] = useState(false);
+  const [valetBusy, setValetBusy] = useState(null);
+  const [valetReported, setValetReported] = useState(null);
+  const [valetError, setValetError] = useState(false);
   const [showCameraFor, setShowCameraFor] = useState(null);
   const [postVideoUrl, setPostVideoUrl] = useState(null);
   const [postNotes, setPostNotes] = useState('');
@@ -301,7 +319,78 @@ export default function PlayerPortal() {
   const [showTrips, setShowTrips] = useState(false);
   const [tripsHistory, setTripsHistory] = useState([]);
   const [unreadMessages, setUnreadMessages] = useState(0);
+  const [unreadOps, setUnreadOps] = useState(0);
   const [systemNotification, setSystemNotification] = useState(null);
+  const notifTimerRef = useRef(null);
+
+  // One way in, so a second message can't be swallowed by the first one's
+  // dismiss timer. Eight seconds: long enough to register between mirror
+  // checks, short enough not to sit over the map.
+  const showSystemNotification = (next) => {
+    if (notifTimerRef.current) clearTimeout(notifTimerRef.current);
+    setSystemNotification(next);
+    notifTimerRef.current = setTimeout(() => {
+      setSystemNotification(null);
+      notifTimerRef.current = null;
+    }, 8000);
+  };
+
+  const dismissSystemNotification = () => {
+    if (notifTimerRef.current) { clearTimeout(notifTimerRef.current); notifTimerRef.current = null; }
+    setSystemNotification(null);
+  };
+
+  useEffect(() => () => { if (notifTimerRef.current) clearTimeout(notifTimerRef.current); }, []);
+
+  // Badges are read back from the database rather than only counted in
+  // memory: a message that landed while the app was closed still has to be
+  // waiting when the driver opens it again.
+  const refreshUnreadCounts = useCallback(async () => {
+    if (!user?.id) return { ride: 0, ops: 0 };
+    let ride = 0;
+    if (activeRide?.id) {
+      const { count } = await supabase
+        .from('ride_messages')
+        .select('id', { count: 'exact', head: true })
+        .eq('ride_id', activeRide.id)
+        .neq('sender_id', user.id)
+        .or('is_read.eq.false,is_read.is.null');
+      ride = count || 0;
+    }
+    const { count: opsCount } = await supabase
+      .from('support_messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('conversation_id', user.id)
+      .neq('sender_id', user.id)
+      .or('is_read.eq.false,is_read.is.null');
+    const ops = opsCount || 0;
+    setUnreadMessages(ride);
+    setUnreadOps(ops);
+    return { ride, ops };
+  }, [user?.id, activeRide?.id]);
+
+  const openOpsChat = (log = false) => {
+    triggerHaptic();
+    if (log) handleLogEvent('Driver messaged Operations');
+    dismissSystemNotification();
+    setShowOpsChat(true);
+    setUnreadOps(0);
+  };
+
+  const openRideChat = () => {
+    triggerHaptic();
+    dismissSystemNotification();
+    setShowChat(true);
+    setUnreadMessages(0);
+  };
+
+  // Sits inside the Message Ops buttons — the toast is gone in seconds, this
+  // is what is still there when the driver next looks at the phone.
+  const opsBadge = unreadOps > 0 ? (
+    <span style={{ background: '#EF4444', color: '#FFF', fontSize: '0.65rem', fontWeight: 800, minWidth: '18px', height: '18px', padding: '0 5px', borderRadius: '9px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', letterSpacing: 0 }}>
+      {unreadOps}
+    </span>
+  ) : null;
   const [activeAudit, setActiveAudit] = useState(null);
   const [driverProfile, setDriverProfile] = useState(undefined); // undefined = loading, null = no application on file (legacy)
   const [billingNotes, setBillingNotes] = useState('');
@@ -383,7 +472,27 @@ export default function PlayerPortal() {
     }
   };
   
-  usePushNotifications();
+  // A push that arrives while the app is open shows nothing on iOS, and one
+  // tapped from the lock screen has to land somewhere useful — both go
+  // through the same toast the in-app messages use.
+  usePushNotifications({
+    onReceived: async (notification) => {
+      const { ride, ops } = await refreshUnreadCounts();
+      triggerHaptic(ImpactStyle.Heavy);
+      // Nothing unread means this was a job or route push, not a message —
+      // 'route' shows it without offering a chat to open.
+      showSystemNotification({
+        type: ride > 0 ? 'passenger' : ops > 0 ? 'ops' : 'route',
+        title: notification?.title || 'ELS Elite',
+        message: notification?.body || 'Open the app for details',
+      });
+    },
+    onOpened: async () => {
+      const { ride, ops } = await refreshUnreadCounts();
+      if (ride > 0) openRideChat();
+      else if (ops > 0) openOpsChat();
+    },
+  });
   const locationStatus = useBackgroundLocation(shiftState === 'ONLINE', activeRide?.id);
 
   // Fetch Route from OSRM
@@ -569,18 +678,8 @@ export default function PlayerPortal() {
           triggerHaptic(ImpactStyle.Heavy);
           if (!showChat) {
             setUnreadMessages(prev => prev + 1);
-            setSystemNotification({ type: 'passenger', title: 'New Message', message: payload.new.message });
-            setTimeout(() => setSystemNotification(null), 4000);
-            
-            if ('Notification' in window && Notification.permission === 'granted') {
-              new Notification('Passenger Message', { body: payload.new.message });
-            } else if ('Notification' in window && Notification.permission !== 'denied') {
-              Notification.requestPermission().then(permission => {
-                if (permission === 'granted') {
-                  new Notification('Passenger Message', { body: payload.new.message });
-                }
-              });
-            }
+            showSystemNotification({ type: 'passenger', title: 'Message from your guest', message: payload.new.message });
+            webNotify('Passenger Message', payload.new.message);
           }
         }
       }).subscribe();
@@ -596,24 +695,44 @@ export default function PlayerPortal() {
         if (payload.new.sender_id !== user.id) {
           triggerHaptic(ImpactStyle.Heavy);
           if (!showOpsChat) {
-            setSystemNotification({ type: 'ops', title: 'Operations Message', message: payload.new.content });
-            setTimeout(() => setSystemNotification(null), 4000);
-            
-            if ('Notification' in window && Notification.permission === 'granted') {
-              new Notification('Operations', { body: payload.new.content });
-            } else if ('Notification' in window && Notification.permission !== 'denied') {
-              Notification.requestPermission().then(permission => {
-                if (permission === 'granted') {
-                  new Notification('Operations', { body: payload.new.content });
-                }
-              });
-            }
+            setUnreadOps(prev => prev + 1);
+            showSystemNotification({ type: 'ops', title: 'ELS Operations', message: payload.new.content });
+            webNotify('Operations', payload.new.content);
           }
         }
       }).subscribe();
       
     return () => { supabase.removeChannel(opsChannel); };
   }, [user?.id, showOpsChat]);
+
+  // Unread counts on launch and whenever the job changes
+  useEffect(() => { refreshUnreadCounts(); }, [refreshUnreadCounts]);
+
+  // ...and every time the app comes forward. A driver who read the push on
+  // the lock screen, or who was in Waze when the message landed, comes back
+  // to an accurate badge and a toast saying what is waiting.
+  useEffect(() => {
+    let handle = null;
+    let cancelled = false;
+
+    CapacitorApp.addListener('appStateChange', async ({ isActive }) => {
+      if (!isActive) return;
+      const { ride, ops } = await refreshUnreadCounts();
+      const waiting = (showChat ? 0 : ride) + (showOpsChat ? 0 : ops);
+      if (waiting > 0) {
+        triggerHaptic(ImpactStyle.Heavy);
+        showSystemNotification({
+          type: (showChat ? 0 : ride) > 0 ? 'passenger' : 'ops',
+          title: waiting === 1 ? '1 unread message' : `${waiting} unread messages`,
+          message: (showChat ? 0 : ride) > 0 ? 'From your guest' : 'From ELS Operations',
+        });
+      }
+    }).then((h) => {
+      if (cancelled) h.remove(); else handle = h;
+    }).catch(() => {});
+
+    return () => { cancelled = true; if (handle) handle.remove(); };
+  }, [refreshUnreadCounts, showChat, showOpsChat]);
 
   // Route change notification
   const prevRideRef = useRef();
@@ -697,7 +816,7 @@ export default function PlayerPortal() {
     try {
       const { data, error } = await supabase.from('driver_shifts').insert({
         driver_id: user.id,
-        car_reg: shiftData.carReg,
+        car_reg: shiftData.carReg?.trim() || null,
         has_problem: shiftData.hasProblem,
         needs_fuel: shiftData.needsFuel,
         pre_shift_video_url: shiftData.videoUrl,
@@ -707,6 +826,44 @@ export default function PlayerPortal() {
       if (data) setCurrentShiftId(data.id);
     } catch(e) {}
     setShiftState('ONLINE');
+  };
+
+  // The car can be filled in after going online — that is the whole point of
+  // not gating the shift on it.
+  const saveShiftVehicle = async () => {
+    const reg = (shiftData.carReg || '').trim().toUpperCase();
+    if (!reg || !currentShiftId) return;
+    setSavingVehicle(true);
+    try {
+      const { error } = await supabase.from('driver_shifts')
+        .update({ car_reg: reg, pre_shift_video_url: shiftData.videoUrl })
+        .eq('id', currentShiftId);
+      if (error) throw error;
+    } catch (e) {
+      console.warn('Could not save the shift vehicle:', e);
+    }
+    setSavingVehicle(false);
+  };
+
+  // Whether the car needs cleaning is known by the person who just got out of
+  // it. One tap here saves the office guessing.
+  const reportValet = async (status) => {
+    const reg = (shiftData.carReg || '').trim();
+    if (!reg) return;
+    setValetBusy(status);
+    try {
+      const { error } = await supabase.rpc('report_vehicle_valet', {
+        p_reg: reg,
+        p_status: status,
+        p_notes: postNotes?.trim() || null,
+      });
+      if (error) throw error;
+      setValetReported(status);
+    } catch (e) {
+      console.warn('Valet report failed:', e);
+      setValetError(true);
+    }
+    setValetBusy(null);
   };
 
   const handleEndShift = async () => {
@@ -723,6 +880,8 @@ export default function PlayerPortal() {
     setPostVideoUrl(null);
     setPostNotes('');
     setCurrentShiftId(null);
+    setValetReported(null);
+    setValetError(false);
   };
 
   const logSystemAudit = async (status) => {
@@ -896,19 +1055,37 @@ export default function PlayerPortal() {
       }
     }
 
-    const currentMetadata = activeRide.metadata || {};
+    // The office can change a job while this phone is holding an older copy of
+    // it — a car reallocated, a stop added, a time moved. Read the row back
+    // immediately before writing, so this update is built on the office's
+    // version rather than ours. Without it, every tap of a status button wrote
+    // a stale metadata object and the phone's own plate back over their work,
+    // which is why a reallocated plate had to be set twice.
+    const { data: fresh } = await supabase
+      .from('rides')
+      .select('metadata, vehicle_reg, acknowledged_at')
+      .eq('id', activeRide.id)
+      .maybeSingle();
+
+    const currentMetadata = fresh?.metadata ?? activeRide.metadata ?? {};
     const newMetadata = {
       ...currentMetadata,
       ...(billingNotes ? { billing_notes: billingNotes } : {})
     };
-    
+
+    // A plate already on the job is the office saying which car this is.
+    // Only offer the shift's plate when the job has none.
+    const jobReg = (fresh?.vehicle_reg ?? activeRide.vehicle_reg ?? '').trim();
+    const shiftReg = shiftData.carReg || driverProfile?.els_plate || driverProfile?.vehicle_reg || '';
+    const alreadyAcknowledged = fresh?.acknowledged_at ?? activeRide.acknowledged_at;
+
     const updatePayload = { 
       status,
       driver_name: user?.user_metadata?.full_name || 'Driver Assigned',
-      vehicle_reg: shiftData.carReg || driverProfile?.els_plate || driverProfile?.vehicle_reg || '',
+      ...(jobReg ? {} : { vehicle_reg: shiftReg }),
       metadata: newMetadata,
       // Log when the driver first responds to an assigned job
-      ...(status === 'en_route' && !activeRide.acknowledged_at ? { acknowledged_at: new Date().toISOString() } : {}),
+      ...(status === 'en_route' && !alreadyAcknowledged ? { acknowledged_at: new Date().toISOString() } : {}),
       ...extraPayload
     };
     
@@ -918,7 +1095,8 @@ export default function PlayerPortal() {
       setActiveRide(null);
       setBillingNotes('');
     } else {
-      setActiveRide({ ...activeRide, ...updatePayload });
+      // Carry the office's version forward too, not just our own edit
+      setActiveRide({ ...activeRide, ...fresh, ...updatePayload });
     }
   };
 
@@ -1000,7 +1178,7 @@ export default function PlayerPortal() {
       {/* Registration — MANDATORY */}
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, type: 'spring', stiffness: 400, damping: 25 }}>
         <div style={{ background: 'rgba(0,0,0,0.04)', border: regIsValid ? '1px solid rgba(212,207,201,0.35)' : '1px solid rgba(0,0,0,0.1)', borderRadius: '12px', padding: '20px', transition: 'border-color 0.3s ease' }}>
-          <label style={{ fontSize: '0.6875rem', fontWeight: 600, letterSpacing: '2px', color: regIsValid ? '#8A7355' : '#888', marginBottom: '10px', display: 'block', textTransform: 'uppercase', transition: 'color 0.3s' }}>{t('vehicleReg')} *</label>
+          <label style={{ fontSize: '0.6875rem', fontWeight: 600, letterSpacing: '2px', color: regIsValid ? '#8A7355' : '#888', marginBottom: '10px', display: 'block', textTransform: 'uppercase', transition: 'color 0.3s' }}>{t('vehicleReg')}</label>
           <input 
             type="text" 
             placeholder={t('regPlaceholder')} 
@@ -1008,7 +1186,10 @@ export default function PlayerPortal() {
             onChange={e => setShiftData({...shiftData, carReg: e.target.value.toUpperCase()})} 
             style={{ width: '100%', padding: '0', background: 'transparent', color: '#000', border: 'none', fontSize: '1.6rem', fontWeight: 600, letterSpacing: '3px', outline: 'none', fontFamily: 'var(--font-family)', textTransform: 'uppercase' }} 
           />
-          {!regIsValid && <p style={{ fontSize: '0.75rem', color: '#EF4444', marginTop: '8px', marginBottom: 0 }}>{t('regRequired')}</p>}
+          {/* Drivers often do not know which car they are in until they get
+              there. Blocking the shift on a plate they cannot know yet just
+              kept them off the road. */}
+          {!regIsValid && <p style={{ fontSize: '0.75rem', color: '#888', marginTop: '8px', marginBottom: 0, lineHeight: 1.5 }}>{t('regOptionalHint')}</p>}
         </div>
       </motion.div>
 
@@ -1058,15 +1239,15 @@ export default function PlayerPortal() {
           style={{ width: '100%', padding: '20px', background: videoRecorded ? 'rgba(138,115,85,0.08)' : 'rgba(0,0,0,0.04)', border: videoRecorded ? '1px solid rgba(138,115,85,0.4)' : '1px solid rgba(0,0,0,0.08)', borderRadius: '12px', color: videoRecorded ? '#8A7355' : '#000', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px', fontWeight: 500, fontSize: '0.8125rem', letterSpacing: '1px', textTransform: 'uppercase', transition: '0.3s' }}
         >
           {videoRecorded ? <Check size={18} color="#8A7355" /> : <Camera size={18} />}
-          {videoRecorded ? t('vehicleScanSaved') : t('recordWalkAround') + ' *'}
+          {videoRecorded ? t('vehicleScanSaved') : t('recordWalkAround')}
         </motion.button>
-        {!videoRecorded && <p style={{ fontSize: '0.75rem', color: '#EF4444', marginTop: '8px', marginBottom: 0, textAlign: 'center' }}>{t('vehicleRecordingRequired')}</p>}
+        {!videoRecorded && <p style={{ fontSize: '0.75rem', color: '#888', marginTop: '8px', marginBottom: 0, textAlign: 'center', lineHeight: 1.5 }}>{t('recordingOptionalHint')}</p>}
       </motion.div>
 
       {/* Notes — optional */}
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.38, type: 'spring', stiffness: 400, damping: 25 }}>
         <div style={{ background: 'rgba(0,0,0,0.04)', border: '1px solid rgba(0,0,0,0.08)', borderRadius: '12px', padding: '20px' }}>
-          <label style={{ fontSize: '0.6875rem', fontWeight: 600, letterSpacing: '2px', color: '#888', marginBottom: '10px', display: 'block', textTransform: 'uppercase' }}>{t('notesOptional')}</label>
+          <label style={{ fontSize: '0.6875rem', fontWeight: 600, letterSpacing: '2px', color: '#555', marginBottom: '10px', display: 'block', textTransform: 'uppercase' }}>{t('notesOptional')}</label>
           <textarea 
             placeholder={t('preNotesPlaceholder')} 
             value={shiftData.preNotes} 
@@ -1077,17 +1258,11 @@ export default function PlayerPortal() {
         </div>
       </motion.div>
 
-      {/* Start Shift — blocked if no reg OR no video */}
+      {/* Start Shift — never blocked. The reg and the walk-around are both
+          wanted by ops, but a driver who does not yet know their car must
+          still be able to go on shift. */}
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.46, type: 'spring', stiffness: 400, damping: 25 }} style={{ marginTop: '8px' }}>
-        {regIsValid && videoRecorded ? (
-          <SwipeButton text={t('goOnlineBtn')} variant="accent" onComplete={handleStartShift} />
-        ) : (
-          <div style={{ width: '100%', height: '60px', background: 'rgba(0,0,0,0.02)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(0,0,0,0.06)' }}>
-            <span style={{ color: '#555', fontWeight: 600, letterSpacing: '2px', fontSize: '0.6875rem', textTransform: 'uppercase' }}>
-              {!regIsValid ? t('enterRegToContinue') : t('recordVehicleToContinue')}
-            </span>
-          </div>
-        )}
+        <SwipeButton text={t('goOnlineBtn')} variant="accent" onComplete={handleStartShift} />
       </motion.div>
     </motion.div>
   );
@@ -1104,7 +1279,7 @@ export default function PlayerPortal() {
 
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2, duration: 0.5 }}>
             <h3 style={{ fontSize: '0.625rem', fontWeight: 600, color: '#8A7355', letterSpacing: '4px', textTransform: 'uppercase', marginBottom: '12px' }}>On Duty</h3>
-            <p style={{ color: '#000', fontSize: '1.375rem', fontWeight: 300, fontFamily: 'var(--font-display), serif', letterSpacing: '0.3px', marginBottom: '8px' }}>
+            <p style={{ color: '#000', fontSize: '1.375rem', fontWeight: 400, fontFamily: 'var(--font-display), serif', letterSpacing: '0.3px', marginBottom: '8px' }}>
               Awaiting your next assignment
             </p>
             <p style={{ color: '#555', fontSize: '0.6875rem', letterSpacing: '0.5px', marginBottom: 0 }}>
@@ -1140,7 +1315,10 @@ export default function PlayerPortal() {
           ? `https://www.google.com/maps/dir/?api=1&destination=${ll}&travelmode=driving`
           : `https://www.google.com/maps/dir/?api=1&destination=${q}&travelmode=driving`;
       } else { // apple
-        url = hasCoords ? `maps://?daddr=${ll}&dirflg=d` : `maps://?daddr=${q}&dirflg=d`;
+        // Universal link, not the maps:// custom scheme — a non-http scheme
+        // opened from the WebView is handled inconsistently and can silently
+        // do nothing. https://maps.apple.com always hands off to the app.
+        url = `https://maps.apple.com/?daddr=${q}&dirflg=d`;
       }
       window.open(url, '_system');
       setNavTarget(null);
@@ -1167,10 +1345,10 @@ export default function PlayerPortal() {
           </div>
 
           <div>
-            <h1 style={{ fontSize: '1.75rem', fontWeight: 300, color: '#000', margin: '0 0 8px 0', fontFamily: 'var(--font-display), serif', letterSpacing: '-0.2px' }}>
+            <h1 style={{ fontSize: '1.75rem', fontWeight: 400, color: '#000', margin: '0 0 8px 0', fontFamily: 'var(--font-display), serif', letterSpacing: '-0.2px' }}>
               {CONDUCT_TITLE}
             </h1>
-            <p style={{ fontSize: '0.8125rem', color: '#888', margin: 0, lineHeight: 1.6 }}>
+            <p style={{ fontSize: '0.8125rem', color: '#555', margin: 0, lineHeight: 1.6 }}>
               {CONDUCT_INTRO}
             </p>
           </div>
@@ -1204,10 +1382,10 @@ export default function PlayerPortal() {
               </motion.button>
               <motion.button
                 whileTap={{ scale: 0.96 }}
-                onClick={() => { triggerHaptic(); handleLogEvent('Driver messaged Operations'); setShowOpsChat(true); }}
+                onClick={() => openOpsChat(true)}
                 style={{ flex: 1, height: '48px', background: 'transparent', border: '1px solid rgba(0,0,0,0.15)', borderRadius: '12px', color: '#000', display: 'flex', gap: '8px', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 600, letterSpacing: '1px', textTransform: 'uppercase', cursor: 'pointer' }}
               >
-                <Headphones size={15} /> Message Ops
+                <Headphones size={15} /> Message Ops {opsBadge}
               </motion.button>
             </div>
           </div>
@@ -1228,7 +1406,7 @@ export default function PlayerPortal() {
           <span style={{ fontSize: '0.6875rem', fontWeight: 500, letterSpacing: '2px', color: '#666', textTransform: 'uppercase' }}>
             {isDispatched ? 'Job Assigned' : isEnRoute ? 'En Route to Client' : isArrived ? 'Client Approaching' : 'Journey in Progress'}
           </span>
-          <span style={{ marginLeft: 'auto', fontSize: '0.5625rem', letterSpacing: '2px', color: '#444', textTransform: 'uppercase' }}>
+          <span style={{ marginLeft: 'auto', fontSize: '0.625rem', letterSpacing: '2px', color: '#444', textTransform: 'uppercase' }}>
             {activeRide.service_type === 'by_the_hour' ? 'HOURLY' : 'ONE WAY'}
           </span>
         </div>
@@ -1240,16 +1418,16 @@ export default function PlayerPortal() {
           return (
             <div style={{ display: 'flex', gap: '16px', background: 'rgba(0,0,0,0.03)', border: '1px solid rgba(0,0,0,0.06)', borderRadius: '12px', padding: '12px 16px', marginTop: '-8px' }}>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.5625rem', color: '#888', letterSpacing: '1px', textTransform: 'uppercase', marginBottom: '2px' }}>{etaData.label}</div>
+                <div style={{ fontSize: '0.625rem', color: '#555', letterSpacing: '1px', textTransform: 'uppercase', marginBottom: '2px' }}>{etaData.label}</div>
                 <div style={{ fontSize: '1.25rem', fontWeight: 600, color: '#000', fontFamily: 'var(--font-family)' }}>
-                  {etaData.mins}<span style={{ fontSize: '0.75rem', fontWeight: 400, color: '#888' }}> min</span>
+                  {etaData.mins}<span style={{ fontSize: '0.75rem', fontWeight: 400, color: '#555' }}> min</span>
                 </div>
               </div>
               <div style={{ width: '1px', background: 'rgba(0,0,0,0.08)' }} />
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.5625rem', color: '#888', letterSpacing: '1px', textTransform: 'uppercase', marginBottom: '2px' }}>Distance</div>
+                <div style={{ fontSize: '0.625rem', color: '#555', letterSpacing: '1px', textTransform: 'uppercase', marginBottom: '2px' }}>Distance</div>
                 <div style={{ fontSize: '1.25rem', fontWeight: 600, color: '#000', fontFamily: 'var(--font-family)' }}>
-                  {etaData.distMiles.toFixed(1)}<span style={{ fontSize: '0.75rem', fontWeight: 400, color: '#888' }}> mi</span>
+                  {etaData.distMiles.toFixed(1)}<span style={{ fontSize: '0.75rem', fontWeight: 400, color: '#555' }}> mi</span>
                 </div>
               </div>
             </div>
@@ -1278,7 +1456,7 @@ export default function PlayerPortal() {
                 <span style={{ fontSize: '1rem', fontWeight: 700, color: '#000', fontFamily: 'var(--font-display), serif' }}>
                   {shown.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
                 </span>
-                <span style={{ fontSize: '0.625rem', color: '#999' }}>
+                <span style={{ fontSize: '0.625rem', color: '#666' }}>
                   · {shown.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
                 </span>
               </div>
@@ -1348,7 +1526,7 @@ export default function PlayerPortal() {
         <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
           <motion.button 
             whileTap={{ scale: 0.96 }}
-            onClick={() => { triggerHaptic(); setShowChat(true); setUnreadMessages(0); }} 
+            onClick={openRideChat} 
             style={{ position: 'relative', flex: 1, height: '60px', background: '#F8F8F8', border: '1px solid #E0E0E0', borderRadius: '14px', color: '#000', display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'center', justifyContent: 'center', fontSize: '0.85rem', fontWeight: 700, letterSpacing: '0.5px' }}
           >
             <MessageSquare size={18}/> Chat
@@ -1447,10 +1625,10 @@ export default function PlayerPortal() {
             </motion.button>
             <motion.button
               whileTap={{ scale: 0.96 }}
-              onClick={() => { triggerHaptic(); handleLogEvent('Driver messaged Operations'); setShowOpsChat(true); }}
+              onClick={() => openOpsChat(true)}
               style={{ flex: 1, height: '48px', background: 'transparent', border: '1px solid rgba(0,0,0,0.15)', borderRadius: '12px', color: '#000', display: 'flex', gap: '8px', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 600, letterSpacing: '1px', textTransform: 'uppercase', cursor: 'pointer' }}
             >
-              <Headphones size={15} /> Message Ops
+              <Headphones size={15} /> Message Ops {opsBadge}
             </motion.button>
           </div>
         </div>
@@ -1500,7 +1678,7 @@ export default function PlayerPortal() {
                   );
                 })()}
 
-                <div style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', color: '#9A938A', marginBottom: '12px' }}>Type</div>
+                <div style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', color: '#6B6B6B', marginBottom: '12px' }}>Type</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '28px' }}>
                   {[
                     { label: 'Parking', amount: '' },
@@ -1519,7 +1697,7 @@ export default function PlayerPortal() {
                   ))}
                 </div>
 
-                <div style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', color: '#9A938A', marginBottom: '4px' }}>Amount</div>
+                <div style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', color: '#6B6B6B', marginBottom: '4px' }}>Amount</div>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', borderBottom: '1px solid #E8E4DE', marginBottom: '22px' }}>
                   <span style={{ fontFamily: 'var(--font-display), serif', fontSize: '1.75rem', color: '#8A7355', lineHeight: 1 }}>£</span>
                   <input type="number" inputMode="decimal" value={expenseAmount} onChange={(e) => setExpenseAmount(e.target.value)} placeholder="0.00"
@@ -1565,7 +1743,7 @@ export default function PlayerPortal() {
                     style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '14px', padding: '17px 18px', marginBottom: '10px', background: o.app === 'waze' ? '#000' : '#FFF', border: o.app === 'waze' ? '1px solid #000' : '1px solid #E8E4DE', borderRadius: '14px', cursor: 'pointer' }}>
                     <Navigation size={17} color={o.app === 'waze' ? '#D4CFC9' : '#8A7355'} />
                     <span style={{ flex: 1, textAlign: 'left', fontSize: '0.9375rem', fontWeight: 600, letterSpacing: '0.2px', color: o.app === 'waze' ? '#FFF' : '#000' }}>{o.name}</span>
-                    {o.tag && <span style={{ fontSize: '0.5625rem', fontWeight: 700, letterSpacing: '1.5px', textTransform: 'uppercase', color: '#8A7355' }}>{o.tag}</span>}
+                    {o.tag && <span style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '1.5px', textTransform: 'uppercase', color: '#8A7355' }}>{o.tag}</span>}
                     <ChevronRight size={17} color={o.app === 'waze' ? 'rgba(255,255,255,0.4)' : '#C9C2B8'} />
                   </motion.button>
                 ))}
@@ -1591,13 +1769,9 @@ export default function PlayerPortal() {
             exit={{ opacity: 0, y: -20 }}
             onClick={() => {
               const { type } = systemNotification;
-              setSystemNotification(null);
-              if (type === 'passenger') {
-                setShowChat(true);
-                setUnreadMessages(0);
-              } else if (type === 'ops') {
-                setShowOpsChat(true);
-              }
+              if (type === 'passenger') openRideChat();
+              else if (type === 'ops') openOpsChat();
+              else dismissSystemNotification();
             }}
             style={{
               position: 'absolute',
@@ -1609,7 +1783,7 @@ export default function PlayerPortal() {
               WebkitBackdropFilter: 'blur(16px)',
               border: systemNotification.type === 'route' ? '1px solid #4CAF50' : '1px solid var(--color-gold-dim, rgba(212,207,201,0.3))',
               borderRadius: '16px',
-              padding: '16px',
+              padding: '18px',
               zIndex: 9999,
               display: 'flex',
               alignItems: 'center',
@@ -1623,9 +1797,14 @@ export default function PlayerPortal() {
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: '0.7rem', fontWeight: 800, letterSpacing: '1px', color: systemNotification.type === 'route' ? '#4CAF50' : 'var(--color-gold, #D4CFC9)', textTransform: 'uppercase', marginBottom: '2px' }}>{systemNotification.title}</div>
-              <div style={{ fontSize: '0.95rem', color: '#FFF', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: 500 }}>
+              <div style={{ fontSize: '1.05rem', color: '#FFF', fontWeight: 500, lineHeight: 1.35, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
                 {systemNotification.message}
               </div>
+              {systemNotification.type !== 'route' && (
+                <div style={{ fontSize: '0.65rem', fontWeight: 700, letterSpacing: '1.5px', textTransform: 'uppercase', color: 'rgba(255,255,255,0.55)', marginTop: '8px' }}>
+                  Tap to open
+                </div>
+              )}
             </div>
           </motion.div>
         )}
@@ -1634,7 +1813,9 @@ export default function PlayerPortal() {
       {/* Header */}
       <div style={{ paddingTop: 'calc(12px + max(env(safe-area-inset-top), 12px))', paddingLeft: '24px', paddingRight: '24px', paddingBottom: '16px', background: 'linear-gradient(180deg, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.6) 60%, transparent 100%)', zIndex: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'absolute', top: 0, left: 0, right: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <img src="/elitels.png" alt="Elite" style={{ height: '28px' }} />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '46px', height: '46px', borderRadius: '50%', background: 'rgba(255,255,255,0.94)', boxShadow: '0 2px 10px rgba(0,0,0,0.18)', flexShrink: 0 }}>
+            <img src="/elitels.png" alt="Elite" style={{ height: '36px', objectFit: 'contain', display: 'block' }} />
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 10px', background: 'rgba(0,0,0,0.04)', borderRadius: '8px', border: '1px solid rgba(0,0,0,0.1)' }}>
             <div style={{ width: '6px', height: '6px', borderRadius: '3px', background: shiftState === 'ONLINE' ? '#4CAF50' : '#555', transition: '0.3s' }} />
             <span style={{ fontSize: '0.65rem', fontWeight: 600, letterSpacing: '2px', color: '#8A7355', textTransform: 'uppercase' }}>{t('chauffeur')}</span>
@@ -1675,7 +1856,7 @@ export default function PlayerPortal() {
                  routeGeoJSON && (
                   <Polyline
                     positions={routeGeoJSON.coordinates.map(c => [c[1], c[0]])}
-                    pathOptions={{ color: '#008080', weight: 6, opacity: 0.9, lineCap: 'round', lineJoin: 'round' }}
+                    pathOptions={{ color: '#8A7355', weight: 6, opacity: 0.9, lineCap: 'round', lineJoin: 'round' }}
                   />
                 )}
                 
@@ -1689,7 +1870,7 @@ export default function PlayerPortal() {
                 {!routeGeoJSON && pCoords && dCoords && activeRide.status === 'in_progress' && (
                   <Polyline
                     positions={[pCoords, dCoords]}
-                    pathOptions={{ color: '#AAA', weight: 4, opacity: 0.8 }}
+                    pathOptions={{ color: '#666', weight: 4, opacity: 0.8 }}
                   />
                 )}
               </>
@@ -1713,7 +1894,7 @@ export default function PlayerPortal() {
       </div>
 
       {/* Bottom Sheet UI */}
-      <motion.div layout transition={{ layout: { type: 'spring', stiffness: 350, damping: 30 } }} style={{ marginTop: 'auto', zIndex: 10, background: '#FFFFFF', borderTopLeftRadius: '16px', borderTopRightRadius: '16px', borderTop: '1px solid rgba(0,0,0,0.06)', boxShadow: '0 -12px 40px rgba(0,0,0,0.18)', padding: '12px 24px 32px', paddingBottom: 'calc(32px + env(safe-area-inset-bottom))', maxHeight: '85dvh', overflowY: 'auto', WebkitOverflowScrolling: 'touch', willChange: 'transform' }}>
+      <motion.div layout transition={{ layout: { type: 'spring', stiffness: 350, damping: 30 } }} style={{ marginTop: 'auto', zIndex: 10, background: '#FFFFFF', borderTopLeftRadius: '16px', borderTopRightRadius: '16px', borderTop: '1px solid rgba(0,0,0,0.06)', boxShadow: '0 -12px 40px rgba(0,0,0,0.18)', padding: '12px 24px 32px', paddingBottom: 'calc(32px + env(safe-area-inset-bottom) + var(--kb, 0px))', maxHeight: '85dvh', overflowY: 'auto', WebkitOverflowScrolling: 'touch', willChange: 'transform' }}>
         
         {/* Drag handle pill */}
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '20px' }}>
@@ -1721,7 +1902,7 @@ export default function PlayerPortal() {
         </div>
         {shiftState === 'OFFLINE' && (
           <motion.div initial={{opacity:0, y:20}} animate={{opacity:1, y:0}} transition={{ staggerChildren: 0.15, duration: 0.4, ease: "easeOut" }} style={{ textAlign: 'center' }}>
-            <motion.h2 initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} style={{ fontSize: '1.75rem', marginBottom: '12px', fontWeight: 300, fontFamily: 'var(--font-display), serif', letterSpacing: '0.5px' }}>{t('chauffeurPortal')}</motion.h2>
+            <motion.h2 initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} style={{ fontSize: '1.75rem', marginBottom: '12px', fontWeight: 400, fontFamily: 'var(--font-display), serif', letterSpacing: '0.5px' }}>{t('chauffeurPortal')}</motion.h2>
 
             {!isApproved ? (
               <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} style={{ textAlign: 'left' }}>
@@ -1732,7 +1913,7 @@ export default function PlayerPortal() {
                       {driverProfile?.status === 'suspended' ? 'Account Suspended' : 'Application Under Review'}
                     </span>
                   </div>
-                  <p style={{ color: '#AAA', fontSize: '0.85rem', lineHeight: 1.6 }}>
+                  <p style={{ color: '#666', fontSize: '0.85rem', lineHeight: 1.6 }}>
                     {driverProfile?.status === 'suspended'
                       ? 'Your account is currently suspended. Contact ELS Operations for details.'
                       : driverProfile?.owns_vehicle
@@ -1760,10 +1941,10 @@ export default function PlayerPortal() {
                   </motion.button>
                   <motion.button
                     whileTap={{ scale: 0.97 }}
-                    onClick={() => { triggerHaptic(); setShowOpsChat(true); }}
+                    onClick={() => openOpsChat()}
                     style={{ flex: 1, padding: '14px', background: 'transparent', border: '1px solid rgba(0,0,0,0.12)', borderRadius: '8px', color: '#000', fontWeight: 600, fontSize: '0.75rem', letterSpacing: '1px', textTransform: 'uppercase', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
                   >
-                    <Headphones size={14} /> Message Ops
+                    <Headphones size={14} /> Message Ops {opsBadge}
                   </motion.button>
                 </div>
               </motion.div>
@@ -1776,7 +1957,7 @@ export default function PlayerPortal() {
                     <span style={{ fontWeight: 600, letterSpacing: '2px', color: '#000' }}>{driverProfile.els_plate}</span>
                   </motion.div>
                 )}
-                <motion.p initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} style={{ color: '#888', marginBottom: '32px', fontSize: '0.8125rem' }}>{t('goOnline')}</motion.p>
+                <motion.p initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} style={{ color: '#555', marginBottom: '32px', fontSize: '0.8125rem' }}>{t('goOnline')}</motion.p>
                 <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ type: "spring", stiffness: 300 }}>
                   <SwipeButton text={t('startShift')} onComplete={() => setShiftState('PRE_SHIFT')} />
                 </motion.div>
@@ -1844,22 +2025,51 @@ export default function PlayerPortal() {
                   <strong> Always</strong> — “While Using the App” stops the moment you leave ELS Driver.
                 </span>
               </motion.button>
-            ) : (
-              <div
-                style={{
-                  width: '100%', padding: '10px 14px', marginBottom: '12px',
-                  background: 'rgba(138,115,85,0.06)', border: '1px solid rgba(138,115,85,0.25)',
-                  borderRadius: '8px', color: '#8A7355',
-                  display: 'flex', alignItems: 'flex-start', gap: '8px'
-                }}
-              >
-                <MapPin size={14} color="#8A7355" style={{ flexShrink: 0, marginTop: '2px' }} />
-                <span style={{ fontSize: '0.75rem', lineHeight: 1.45 }}>
-                  Sharing your location. Keep ELS Driver running in the background — closing
-                  it from the app switcher stops your passenger seeing you.
-                </span>
-              </div>
-            )}
+            ) : (() => {
+              // Three honest states. The banner must never claim the passenger
+              // can see the driver unless positions are actually landing.
+              const waitingForFix = !locationStatus.hasFix;
+              const backlog = locationStatus.queuedCount > 0;
+              const degraded = waitingForFix || backlog;
+
+              const tone = degraded
+                ? { fg: '#9A6B00', bg: 'rgba(154,107,0,0.07)', border: 'rgba(154,107,0,0.3)' }
+                : { fg: '#8A7355', bg: 'rgba(138,115,85,0.06)', border: 'rgba(138,115,85,0.25)' };
+
+              let heading = null;
+              let body = 'Sharing your location. Keep ELS Driver running in the background — closing it from the app switcher stops your passenger seeing you.';
+
+              if (waitingForFix) {
+                heading = 'Finding your position';
+                body = 'Waiting for a GPS fix. Your passenger cannot see you yet — this usually clears within a few seconds of moving.';
+              } else if (backlog) {
+                heading = 'No signal — positions held';
+                body = `${locationStatus.queuedCount} position${locationStatus.queuedCount === 1 ? '' : 's'} saved on this phone and waiting to send. Nothing is lost; they upload automatically when signal returns.`;
+              }
+
+              return (
+                <div
+                  style={{
+                    width: '100%', padding: '10px 14px', marginBottom: '12px',
+                    background: tone.bg, border: `1px solid ${tone.border}`,
+                    borderRadius: '8px', color: tone.fg,
+                    display: 'flex', alignItems: 'flex-start', gap: '8px'
+                  }}
+                >
+                  {degraded
+                    ? <AlertTriangle size={14} color={tone.fg} style={{ flexShrink: 0, marginTop: '2px' }} />
+                    : <MapPin size={14} color={tone.fg} style={{ flexShrink: 0, marginTop: '2px' }} />}
+                  <span style={{ fontSize: '0.75rem', lineHeight: 1.45 }}>
+                    {heading && (
+                      <strong style={{ display: 'block', letterSpacing: '0.5px', textTransform: 'uppercase', fontSize: '0.6875rem', marginBottom: '3px' }}>
+                        {heading}
+                      </strong>
+                    )}
+                    {body}
+                  </span>
+                </div>
+              );
+            })()}
             {renderActiveJob()}
             {!activeRide && (
               <motion.div 
@@ -1891,12 +2101,48 @@ export default function PlayerPortal() {
                   </motion.button>
                   <motion.button
                     whileTap={{ scale: 0.97 }}
-                    onClick={() => { triggerHaptic(); setShowOpsChat(true); }}
+                    onClick={() => openOpsChat()}
                     style={{ flex: 1, padding: '14px', background: 'transparent', border: '1px solid rgba(0,0,0,0.1)', borderRadius: '8px', color: '#000', fontWeight: 600, fontSize: '0.6875rem', letterSpacing: '1px', textTransform: 'uppercase', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
                   >
-                    <Headphones size={14} /> Message Ops
+                    <Headphones size={14} /> Message Ops {opsBadge}
                   </motion.button>
                 </div>
+                {/* No car on this shift yet — the driver went online before
+                    they knew which one they were in. Add it here. */}
+                {!shiftData.carReg?.trim() && (
+                  <div style={{ background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: '8px', padding: '16px' }}>
+                    <div style={{ fontSize: '0.6875rem', fontWeight: 600, letterSpacing: '1px', textTransform: 'uppercase', color: '#B4741A', marginBottom: '4px' }}>
+                      {t('vehicleNotRecorded')}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: '#666', marginBottom: '12px', lineHeight: 1.5 }}>
+                      {t('addYourVehicle')}
+                    </div>
+                    {/* Stacked, not side by side. A flex row let the input
+                        refuse to shrink below its content width and pushed the
+                        Save button clean off the side of the phone. */}
+                    <input
+                      value={shiftData.carReg}
+                      placeholder={t('regPlaceholder')}
+                      onChange={e => setShiftData({ ...shiftData, carReg: e.target.value.toUpperCase() })}
+                      style={{ width: '100%', boxSizing: 'border-box', padding: '14px', background: '#FFF', border: '1px solid rgba(0,0,0,0.1)', borderRadius: '8px', color: '#000', fontSize: '1.1rem', fontWeight: 600, letterSpacing: '2px', outline: 'none', textTransform: 'uppercase' }}
+                    />
+                    <button
+                      onClick={() => { triggerHaptic(); saveShiftVehicle(); }}
+                      disabled={savingVehicle || !shiftData.carReg?.trim()}
+                      style={{ marginTop: '8px', width: '100%', boxSizing: 'border-box', padding: '14px', background: shiftData.carReg?.trim() ? '#000' : 'rgba(0,0,0,0.15)', border: 'none', borderRadius: '8px', color: '#FFF', fontWeight: 600, fontSize: '0.6875rem', letterSpacing: '1px', textTransform: 'uppercase', cursor: shiftData.carReg?.trim() ? 'pointer' : 'not-allowed' }}
+                    >
+                      {savingVehicle ? '…' : t('saveVehicle')}
+                    </button>
+                    <button
+                      onClick={() => { triggerHaptic(); setShowCameraFor('pre'); }}
+                      style={{ marginTop: '8px', width: '100%', boxSizing: 'border-box', padding: '12px', background: 'transparent', border: '1px solid rgba(0,0,0,0.1)', borderRadius: '8px', color: '#000', fontWeight: 600, fontSize: '0.6875rem', letterSpacing: '1px', textTransform: 'uppercase', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
+                    >
+                      {videoRecorded ? <Check size={14} /> : <Camera size={14} />}
+                      {videoRecorded ? t('vehicleScanSaved') : t('recordWalkAround')}
+                    </button>
+                  </div>
+                )}
+
                 <motion.button
                   whileTap={{ scale: 0.97 }}
                   onClick={() => setShiftState('POST_SHIFT')}
@@ -1913,7 +2159,7 @@ export default function PlayerPortal() {
           <motion.div initial={{opacity:0, y:20}} animate={{opacity:1, y:0}} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
             {/* Header */}
             <motion.div initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}>
-              <h3 style={{ fontSize: '0.6875rem', fontWeight: 600, letterSpacing: '3px', textTransform: 'uppercase', color: '#D4CFC9' }}>{t('endOfShift')}</h3>
+              <h3 style={{ fontSize: '0.6875rem', fontWeight: 600, letterSpacing: '3px', textTransform: 'uppercase', color: '#8A7355' }}>{t('endOfShift')}</h3>
             </motion.div>
 
             {/* Step-by-step instructions */}
@@ -1923,8 +2169,8 @@ export default function PlayerPortal() {
               <p style={{ fontWeight: 500, fontSize: '0.875rem', color: '#000', marginBottom: '12px' }}>{t('walkAroundInstructions')}</p>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {[t('step1'), t('step2'), t('step3'), t('step4'), t('step5')].map((step, i) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#AAA', fontSize: '0.8125rem' }}>
-                    <div style={{ minWidth: '24px', height: '24px', borderRadius: '50%', border: '1px solid rgba(0,0,0,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.6875rem', fontWeight: 600, color: '#D4CFC9' }}>{i + 1}</div>
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#666', fontSize: '0.8125rem' }}>
+                    <div style={{ minWidth: '24px', height: '24px', borderRadius: '50%', border: '1px solid rgba(0,0,0,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.6875rem', fontWeight: 600, color: '#8A7355' }}>{i + 1}</div>
                     {step}
                   </div>
                 ))}
@@ -1943,10 +2189,46 @@ export default function PlayerPortal() {
               </motion.button>
             </motion.div>
 
+            {/* How is the car — one tap, straight onto the office's fleet
+                board. Only asked when we know which car it was. */}
+            {shiftData.carReg?.trim() && (
+              <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.22, type: 'spring', stiffness: 400, damping: 25 }}>
+                <div style={{ background: 'rgba(0,0,0,0.04)', border: '1px solid rgba(0,0,0,0.08)', borderRadius: '12px', padding: '20px' }}>
+                  <label style={{ fontSize: '0.6875rem', fontWeight: 600, letterSpacing: '2px', color: '#555', marginBottom: '4px', display: 'block', textTransform: 'uppercase' }}>{t('howIsTheCar')}</label>
+                  <p style={{ fontSize: '0.75rem', color: '#666', margin: '0 0 14px', lineHeight: 1.5 }}>{t('howIsTheCarHint')}</p>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    {[['clean', t('valetClean')], ['needs_wash', t('valetNeedsWash')], ['needs_valet', t('valetNeedsValet')]].map(([v, l]) => (
+                      <motion.button
+                        key={v}
+                        whileTap={{ scale: 0.96 }}
+                        onClick={() => { triggerHaptic(); reportValet(v); }}
+                        disabled={!!valetBusy}
+                        style={{
+                          flex: 1, padding: '12px 8px', borderRadius: '8px', cursor: 'pointer',
+                          background: valetReported === v ? '#000' : 'transparent',
+                          border: valetReported === v ? '1px solid #000' : '1px solid rgba(0,0,0,0.1)',
+                          color: valetReported === v ? '#FFF' : '#555',
+                          fontWeight: 600, fontSize: '0.6875rem', letterSpacing: '0.5px'
+                        }}
+                      >
+                        {valetBusy === v ? '…' : l}
+                      </motion.button>
+                    ))}
+                  </div>
+                  {valetReported && (
+                    <p style={{ fontSize: '0.75rem', color: '#8A7355', margin: '10px 0 0' }}>{t('valetThanks')}</p>
+                  )}
+                  {valetError && !valetReported && (
+                    <p style={{ fontSize: '0.75rem', color: '#EF4444', margin: '10px 0 0' }}>{t('valetFailed')}</p>
+                  )}
+                </div>
+              </motion.div>
+            )}
+
             {/* Notes — optional */}
             <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25, type: 'spring', stiffness: 400, damping: 25 }}>
               <div style={{ background: 'rgba(0,0,0,0.04)', border: '1px solid rgba(0,0,0,0.08)', borderRadius: '12px', padding: '20px' }}>
-                <label style={{ fontSize: '0.6875rem', fontWeight: 600, letterSpacing: '2px', color: '#888', marginBottom: '10px', display: 'block', textTransform: 'uppercase' }}>{t('endOfShiftNotes')}</label>
+                <label style={{ fontSize: '0.6875rem', fontWeight: 600, letterSpacing: '2px', color: '#555', marginBottom: '10px', display: 'block', textTransform: 'uppercase' }}>{t('endOfShiftNotes')}</label>
                 <textarea 
                   placeholder={t('postNotesPlaceholder')} 
                   value={postNotes} 
@@ -1957,19 +2239,15 @@ export default function PlayerPortal() {
               </div>
             </motion.div>
 
-            {/* Complete — only if video done */}
+            {/* Complete — the walk-around is asked for, never demanded. A
+                driver with no car on the shift has nothing to record, and
+                gating this would have left them unable to clock off. */}
             <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} style={{ marginTop: '8px' }}>
-              {postVideoUrl ? (
-                <SwipeButton text={t('completeShift')} variant="danger" onComplete={handleEndShift} />
-              ) : (
-                <div style={{ width: '100%', height: '60px', background: 'rgba(0,0,0,0.02)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(0,0,0,0.06)' }}>
-                  <span style={{ color: '#555', fontWeight: 600, letterSpacing: '2px', fontSize: '0.6875rem', textTransform: 'uppercase' }}>{t('recordToComplete')}</span>
-                </div>
-              )}
+              <SwipeButton text={t('completeShift')} variant="danger" onComplete={handleEndShift} />
             </motion.div>
 
             {/* Cancel — go back online */}
-            <button onClick={() => setShiftState('ONLINE')} style={{ padding: '12px', color: '#888', fontSize: '0.85rem', fontWeight: 500 }}>{t('cancelStayOnline')}</button>
+            <button onClick={() => setShiftState('ONLINE')} style={{ padding: '12px', color: '#555', fontSize: '0.85rem', fontWeight: 500 }}>{t('cancelStayOnline')}</button>
           </motion.div>
         )}
 
@@ -2003,12 +2281,12 @@ export default function PlayerPortal() {
               <motion.button whileTap={{ scale: 0.9 }} onClick={() => setShowHistory(false)} style={{ padding: '10px', background: 'transparent', border: '1px solid rgba(0,0,0,0.08)', borderRadius: '8px' }}>
                 <ChevronLeft size={20} color="#000" />
               </motion.button>
-              <h2 style={{ color: '#000', fontSize: '1.5rem', fontWeight: 300, fontFamily: 'var(--font-display), serif', flex: 1 }}>{t('myShifts')}</h2>
+              <h2 style={{ color: '#000', fontSize: '1.5rem', fontWeight: 400, fontFamily: 'var(--font-display), serif', flex: 1 }}>{t('myShifts')}</h2>
               {!historyLoading && shiftHistory.length > 0 && (
                 <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ type: 'spring', stiffness: 500, damping: 25 }}
                   style={{ padding: '4px 12px', background: 'rgba(0,0,0,0.04)', borderRadius: '8px', border: '1px solid rgba(0,0,0,0.1)' }}
                 >
-                  <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#999', fontVariantNumeric: 'tabular-nums' }}>{shiftHistory.length}</span>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#666', fontVariantNumeric: 'tabular-nums' }}>{shiftHistory.length}</span>
                 </motion.div>
               )}
             </div>
@@ -2087,7 +2365,7 @@ export default function PlayerPortal() {
                             </div>
                           )}
                           {shift.needs_fuel && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#F59E0B', fontSize: '0.75rem', marginTop: '4px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#B45309', fontSize: '0.75rem', marginTop: '4px' }}>
                               <Fuel size={13} /> {t('fuelNeeded')}
                             </div>
                           )}
@@ -2097,12 +2375,12 @@ export default function PlayerPortal() {
                         {(shift.pre_shift_video_url || shift.post_shift_video_url) && (
                           <div style={{ display: 'flex', flexDirection: 'column', marginTop: '10px', paddingTop: '4px', borderTop: '1px solid rgba(0,0,0,0.05)' }}>
                             {shift.pre_shift_video_url && (
-                              <a href={shift.pre_shift_video_url} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 0', color: '#999', fontSize: '0.75rem', fontWeight: 500, letterSpacing: '0.5px', textDecoration: 'none' }}>
+                              <a href={shift.pre_shift_video_url} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 0', color: '#666', fontSize: '0.75rem', fontWeight: 500, letterSpacing: '0.5px', textDecoration: 'none' }}>
                                 <Video size={14} color="#D4CFC9" /> {t('preShiftVideo')}
                               </a>
                             )}
                             {shift.post_shift_video_url && (
-                              <a href={shift.post_shift_video_url} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 0', color: '#999', fontSize: '0.75rem', fontWeight: 500, letterSpacing: '0.5px', textDecoration: 'none' }}>
+                              <a href={shift.post_shift_video_url} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 0', color: '#666', fontSize: '0.75rem', fontWeight: 500, letterSpacing: '0.5px', textDecoration: 'none' }}>
                                 <Video size={14} color="#D4CFC9" /> {t('postShiftVideo')}
                               </a>
                             )}
@@ -2117,7 +2395,7 @@ export default function PlayerPortal() {
                               {shift.metadata.audit_logs.map((log, idx) => (
                                 <div key={idx} style={{ display: 'flex', gap: '10px', fontSize: '0.8125rem' }}>
                                   <span style={{ color: '#555', fontVariantNumeric: 'tabular-nums' }}>{new Date(log.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</span>
-                                  <span style={{ color: '#D4CFC9', fontWeight: 400 }}>{log.message}</span>
+                                  <span style={{ color: '#8A7355', fontWeight: 500 }}>{log.message}</span>
                                 </div>
                               ))}
                             </div>
@@ -2145,10 +2423,10 @@ export default function PlayerPortal() {
               <button onClick={() => setShowTrips(false)} style={{ padding: '10px', background: 'transparent', border: '1px solid rgba(0,0,0,0.08)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <ChevronLeft size={20} color="#000" />
               </button>
-              <h2 style={{ color: '#000', fontSize: '1.5rem', fontWeight: 300, fontFamily: 'var(--font-display), serif', flex: 1 }}>My Trips</h2>
+              <h2 style={{ color: '#000', fontSize: '1.5rem', fontWeight: 400, fontFamily: 'var(--font-display), serif', flex: 1 }}>My Trips</h2>
               {!historyLoading && tripsHistory.length > 0 && (
                 <div style={{ padding: '4px 12px', background: 'rgba(0,0,0,0.04)', borderRadius: '8px', border: '1px solid rgba(0,0,0,0.1)' }}>
-                  <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#999', fontVariantNumeric: 'tabular-nums' }}>{tripsHistory.length}</span>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#666', fontVariantNumeric: 'tabular-nums' }}>{tripsHistory.length}</span>
                 </div>
               )}
             </div>
@@ -2213,7 +2491,7 @@ export default function PlayerPortal() {
                               {auditLogs.map((log, idx) => (
                                 <div key={idx} style={{ display: 'flex', gap: '10px', fontSize: '0.8125rem' }}>
                                   <span style={{ color: '#555', fontVariantNumeric: 'tabular-nums' }}>{new Date(log.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</span>
-                                  <span style={{ color: '#D4CFC9', fontWeight: 400 }}>{log.message}</span>
+                                  <span style={{ color: '#8A7355', fontWeight: 500 }}>{log.message}</span>
                                 </div>
                               ))}
                             </div>
@@ -2295,7 +2573,7 @@ export default function PlayerPortal() {
               style={{ width: '100%', background: '#FFFFFF', borderTop: '1px solid rgba(0,0,0,0.08)', borderTopLeftRadius: '12px', borderTopRightRadius: '12px', padding: '24px', paddingBottom: 'calc(var(--modal-pb, 24px) + var(--safe-area-bottom, env(safe-area-inset-bottom)))', maxHeight: 'calc(var(--vv-height, 100dvh) - 24px)', overflowY: 'auto', WebkitOverflowScrolling: 'touch' }}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                <h3 style={{ fontSize: '0.6875rem', fontWeight: 600, letterSpacing: '3px', textTransform: 'uppercase', color: '#D4CFC9' }}>Trip Notes / Audit</h3>
+                <h3 style={{ fontSize: '0.6875rem', fontWeight: 600, letterSpacing: '3px', textTransform: 'uppercase', color: '#8A7355' }}>Trip Notes / Audit</h3>
                 <button onClick={() => setShowAuditLog(false)} style={{ padding: '8px', background: 'transparent', border: '1px solid rgba(0,0,0,0.1)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <X size={18} color="#000" />
                 </button>
