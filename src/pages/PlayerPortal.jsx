@@ -270,6 +270,9 @@ export default function PlayerPortal() {
   // ride id → the last status this app saw, so a new assignment can be told
   // apart from the office editing a job we already hold
   const seenRidesRef = useRef({});
+  // "Plans changed" — the job stopped following what was booked
+  const [showOffPlanSheet, setShowOffPlanSheet] = useState(false);
+  const [offPlanSaving, setOffPlanSaving] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [shiftHistory, setShiftHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -1118,6 +1121,39 @@ export default function PlayerPortal() {
     }
   };
 
+  /**
+   * Tell the office the job has stopped following its plan.
+   *
+   * Not a request and not a cancellation — the job carries on. It marks the
+   * moment so the office reads the GPS trail as the truth from here, instead
+   * of a planned route the car is no longer on.
+   */
+  const reportOffPlan = async (reason) => {
+    if (!activeRide?.id || offPlanSaving) return;
+    setOffPlanSaving(true);
+    try {
+      const { data, error } = await supabase.rpc('flag_ride_off_plan', {
+        p_ride_id: activeRide.id,
+        p_reason: reason || null,
+        p_lat: location?.[0] ?? null,
+        p_lng: location?.[1] ?? null,
+      });
+      if (error || !data?.ok) throw new Error(data?.error || error?.message || 'Could not reach the office.');
+      triggerHaptic(ImpactStyle.Medium);
+      setActiveRide(prev => prev ? { ...prev, off_plan_at: data.at, off_plan_reason: reason || null } : prev);
+      setShowOffPlanSheet(false);
+      showSystemNotification({
+        type: 'route',
+        title: 'Office told',
+        message: 'They will follow your actual route from here.',
+      });
+    } catch (e) {
+      showSystemNotification({ type: 'route', title: 'Could not send', message: e.message });
+    } finally {
+      setOffPlanSaving(false);
+    }
+  };
+
   // Geofence Auto-Arrive logic
   useEffect(() => {
     if (activeRide?.status === 'en_route' && activeRide.pickup_coords && location) {
@@ -1628,6 +1664,29 @@ export default function PlayerPortal() {
           onAction={runJourneyAction}
         />
 
+        {/* Plans changed. Sits with the journey controls rather than under
+            "Problem with this job?", because it is not a problem — it is the
+            driver telling the office to read the trip, not the plan. */}
+        {activeRide.off_plan_at ? (
+          <div style={{ marginTop: '14px', display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 14px', borderRadius: '12px', background: 'rgba(180,83,9,0.08)', border: '1px solid rgba(180,83,9,0.25)' }}>
+            <Navigation size={15} color="#B45309" style={{ flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#B45309' }}>Office is following your actual route</div>
+              <div style={{ fontSize: '0.6875rem', color: '#8A6D3B', marginTop: '1px' }}>
+                {activeRide.off_plan_reason || 'Reported at ' + new Date(activeRide.off_plan_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <motion.button
+            whileTap={{ scale: 0.97 }}
+            onClick={() => { triggerHaptic(); setShowOffPlanSheet(true); }}
+            style={{ marginTop: '14px', width: '100%', height: '46px', background: 'transparent', border: '1px dashed rgba(0,0,0,0.22)', borderRadius: '12px', color: '#555', display: 'flex', gap: '8px', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 600, letterSpacing: '0.5px', cursor: 'pointer' }}
+          >
+            <Navigation size={14} /> Plans have changed — we're off the route
+          </motion.button>
+        )}
+
         {/* No accept/decline — assigned jobs go through Operations */}
         <div style={{ marginTop: '16px' }}>
           <div style={{ textAlign: 'center', fontSize: '0.6875rem', fontWeight: 600, letterSpacing: '1.5px', color: '#666', textTransform: 'uppercase', marginBottom: '10px' }}>
@@ -1650,6 +1709,57 @@ export default function PlayerPortal() {
             </motion.button>
           </div>
         </div>
+
+        {/* Plans-changed sheet. One tap sends it; the reasons are shortcuts,
+            not a required form — a driver mid-job should not be typing. */}
+        {createPortal(
+        <AnimatePresence>
+          {showOffPlanSheet && (
+            <>
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.25 }}
+                onClick={() => setShowOffPlanSheet(false)}
+                style={{ position: 'fixed', inset: 0, zIndex: 10050, background: 'rgba(10,9,8,0.45)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }} />
+              <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', stiffness: 340, damping: 36, mass: 0.9 }}
+                style={{ position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 10051, background: '#FFF', borderRadius: '24px 24px 0 0', padding: '22px 22px calc(22px + env(safe-area-inset-bottom))', boxShadow: '0 -12px 48px rgba(0,0,0,0.18)' }}>
+                <div style={{ fontSize: '1.0625rem', fontWeight: 700, marginBottom: '6px' }}>Plans have changed?</div>
+                <div style={{ fontSize: '0.8125rem', color: '#666', lineHeight: 1.5, marginBottom: '18px' }}>
+                  The office will stop reading the booked route and follow where you actually go.
+                  The job carries on as normal — nothing is cancelled.
+                </div>
+                {[
+                  'Passenger changed the destination',
+                  'Extra stop added on the move',
+                  'Waiting on the passenger, plans unclear',
+                  'Road closed or diverted',
+                ].map(reason => (
+                  <motion.button
+                    key={reason}
+                    whileTap={{ scale: 0.98 }}
+                    disabled={offPlanSaving}
+                    onClick={() => reportOffPlan(reason)}
+                    style={{ width: '100%', textAlign: 'left', padding: '14px 16px', marginBottom: '8px', borderRadius: '12px', border: '1px solid rgba(0,0,0,0.12)', background: '#FFF', fontSize: '0.875rem', fontWeight: 500, cursor: 'pointer' }}
+                  >
+                    {reason}
+                  </motion.button>
+                ))}
+                <motion.button
+                  whileTap={{ scale: 0.98 }}
+                  disabled={offPlanSaving}
+                  onClick={() => reportOffPlan(null)}
+                  style={{ width: '100%', padding: '14px 16px', marginTop: '4px', borderRadius: '12px', border: 'none', background: '#000', color: '#FFF', fontSize: '0.75rem', fontWeight: 700, letterSpacing: '1px', textTransform: 'uppercase', cursor: 'pointer' }}
+                >
+                  {offPlanSaving ? 'Sending…' : 'Just tell them we are off plan'}
+                </motion.button>
+                <button
+                  onClick={() => setShowOffPlanSheet(false)}
+                  style={{ width: '100%', padding: '14px', marginTop: '6px', background: 'none', border: 'none', color: '#888', fontSize: '0.8125rem', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>, document.body)}
 
         {/* Expense entry sheet — portalled to body: the job card animates with a
             transform, which would otherwise trap position:fixed inside it */}
