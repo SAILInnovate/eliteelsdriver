@@ -270,6 +270,9 @@ export default function PlayerPortal() {
   // ride id → the last status this app saw, so a new assignment can be told
   // apart from the office editing a job we already hold
   const seenRidesRef = useRef({});
+  // Everything assigned to this driver, soonest first — the job in hand is
+  // taken out of it and shown as the active card.
+  const [upcomingJobs, setUpcomingJobs] = useState([]);
   // "Plans changed" — the job stopped following what was booked
   const [showOffPlanSheet, setShowOffPlanSheet] = useState(false);
   const [offPlanSaving, setOffPlanSaving] = useState(false);
@@ -351,6 +354,36 @@ export default function PlayerPortal() {
   // Badges are read back from the database rather than only counted in
   // memory: a message that landed while the app was closed still has to be
   // waiting when the driver opens it again.
+  /**
+   * Load every job assigned to this driver.
+   *
+   * This used to fetch one row with maybeSingle(), which errors the moment a
+   * driver holds two jobs — so a driver with a job now and another at four
+   * o'clock saw nothing at all. The list is the source of truth; the active
+   * card is derived from it.
+   */
+  const loadAssignedJobs = useCallback(async () => {
+    if (!user?.id) return;
+    const { data } = await supabase
+      .from('rides')
+      .select('*')
+      .eq('driver_id', user.id)
+      .in('status', ['dispatched', 'en_route', 'arrived', 'in_progress'])
+      .order('scheduled_at', { ascending: true, nullsFirst: false })
+      .limit(50);
+
+    const jobs = data || [];
+    // The job in hand is the one under way; failing that, the next dispatched.
+    const inHand =
+      jobs.find(j => ['en_route', 'arrived', 'in_progress'].includes(j.status)) ||
+      jobs.find(j => j.status === 'dispatched') ||
+      null;
+
+    if (inHand) seenRidesRef.current[inHand.id] = inHand.status;
+    setActiveRide(inHand);
+    setUpcomingJobs(jobs.filter(j => j.id !== inHand?.id));
+  }, [user?.id]);
+
   const refreshUnreadCounts = useCallback(async () => {
     if (!user?.id) return { ride: 0, ops: 0 };
     let ride = 0;
@@ -610,16 +643,7 @@ export default function PlayerPortal() {
         .maybeSingle();
       setDriverProfile(profile || null);
 
-      const { data: ride } = await supabase.from('rides')
-        .select('*')
-        .eq('driver_id', user.id)
-        .in('status', ['dispatched', 'en_route', 'arrived', 'in_progress'])
-        .maybeSingle();
-      if (ride) {
-        setActiveRide(ride);
-        setShiftState('ONLINE');
-        seenRidesRef.current[ride.id] = ride.status;
-      }
+      await loadAssignedJobs();
 
       // Restore active shift if the driver hasn't ended it
       const { data: shift } = await supabase.from('driver_shifts')
@@ -663,10 +687,12 @@ export default function PlayerPortal() {
           && ride.status === 'dispatched';
         seenRidesRef.current[ride.id] = ride.status;
 
-        if (['completed', 'cancelled'].includes(ride.status)) {
-          setActiveRide(null);
-        } else {
-          setActiveRide(ride);
+        // Re-derive from the server rather than assuming this row is the job
+        // in hand: with more than one job assigned, taking payload.new as the
+        // active card would swap the driver onto whichever job ops touched.
+        loadAssignedJobs();
+
+        if (!['completed', 'cancelled'].includes(ride.status)) {
           // New job assigned to this driver — strong haptic alert
           if (firstTimeWeHaveSeenIt || justDispatched) {
             try {
@@ -1321,6 +1347,95 @@ export default function PlayerPortal() {
     </motion.div>
   );
 
+  /**
+   * What else is on today. Deliberately quiet — enough to plan around
+   * (when, where from, where to, who) and nothing that invites acting on a
+   * job that is not the one in hand.
+   */
+  const renderUpcoming = () => {
+    if (upcomingJobs.length === 0) return null;
+
+    const when = (job) => {
+      if (!job.scheduled_at) return 'Time to be confirmed';
+      const d = new Date(job.scheduled_at);
+      const today = new Date();
+      const sameDay = d.toDateString() === today.toDateString();
+      const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
+      const isTomorrow = d.toDateString() === tomorrow.toDateString();
+      const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+      if (sameDay) return `Today · ${time}`;
+      if (isTomorrow) return `Tomorrow · ${time}`;
+      return `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })} · ${time}`;
+    };
+
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.15, duration: 0.4 }}
+        style={{ marginTop: '28px' }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+          <span style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '2.5px', textTransform: 'uppercase', color: '#8A7355' }}>
+            Coming Up
+          </span>
+          <span style={{ fontSize: '0.6875rem', color: '#888' }}>
+            {upcomingJobs.length} job{upcomingJobs.length === 1 ? '' : 's'}
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {upcomingJobs.map(job => (
+            <div
+              key={job.id}
+              style={{
+                border: '1px solid rgba(0,0,0,0.10)', borderRadius: '14px',
+                padding: '14px 16px', background: '#FFF'
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px', marginBottom: '8px' }}>
+                <span style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#000' }}>{when(job)}</span>
+                <span style={{ fontSize: '0.5625rem', fontWeight: 700, letterSpacing: '1px', textTransform: 'uppercase', color: '#8A7355' }}>
+                  {job.booking_reference || job.status}
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '4px' }}>
+                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#000' }} />
+                  <span style={{ width: '1px', flex: 1, minHeight: '16px', background: 'rgba(0,0,0,0.15)' }} />
+                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', border: '1.5px solid #000' }} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <span style={{ fontSize: '0.8125rem', color: '#000', lineHeight: 1.35 }}>
+                    {job.pickup_address?.split(',')[0] || 'Pickup to be confirmed'}
+                  </span>
+                  <span style={{ fontSize: '0.8125rem', color: '#555', lineHeight: 1.35 }}>
+                    {job.dropoff_address?.split(',')[0] || 'As directed'}
+                  </span>
+                </div>
+              </div>
+
+              {(job.client_name || job.vehicle_reg) && (
+                <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(0,0,0,0.06)', display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
+                  {job.client_name && (
+                    <span style={{ fontSize: '0.6875rem', color: '#666' }}>{job.client_name}</span>
+                  )}
+                  {job.vehicle_reg && (
+                    <span style={{ fontSize: '0.6875rem', color: '#666', letterSpacing: '1px' }}>{job.vehicle_reg}</span>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <p style={{ fontSize: '0.6875rem', color: '#888', textAlign: 'center', marginTop: '14px', marginBottom: 0 }}>
+          These open when the job in hand is finished.
+        </p>
+      </motion.div>
+    );
+  };
+
   const renderActiveJob = () => {
     if (!activeRide) return (
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4, ease: 'easeOut' }} style={{ textAlign: 'center', padding: '10px 0 30px' }}>
@@ -1341,6 +1456,8 @@ export default function PlayerPortal() {
             </p>
           </motion.div>
         </div>
+
+        <div style={{ textAlign: 'left' }}>{renderUpcoming()}</div>
       </motion.div>
     );
 
@@ -1709,6 +1826,8 @@ export default function PlayerPortal() {
             </motion.button>
           </div>
         </div>
+
+        {renderUpcoming()}
 
         {/* Plans-changed sheet. One tap sends it; the reasons are shortcuts,
             not a required form — a driver mid-job should not be typing. */}
