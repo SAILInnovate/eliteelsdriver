@@ -267,6 +267,9 @@ export default function PlayerPortal() {
   const [postVideoUrl, setPostVideoUrl] = useState(null);
   const [postNotes, setPostNotes] = useState('');
   const [currentShiftId, setCurrentShiftId] = useState(null);
+  // ride id → the last status this app saw, so a new assignment can be told
+  // apart from the office editing a job we already hold
+  const seenRidesRef = useRef({});
   const [showHistory, setShowHistory] = useState(false);
   const [shiftHistory, setShiftHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -612,6 +615,7 @@ export default function PlayerPortal() {
       if (ride) {
         setActiveRide(ride);
         setShiftState('ONLINE');
+        seenRidesRef.current[ride.id] = ride.status;
       }
 
       // Restore active shift if the driver hasn't ended it
@@ -642,12 +646,26 @@ export default function PlayerPortal() {
         const ride = payload.new;
         if (!ride || ride.driver_id !== user?.id) return;
 
+        // Whether this is a NEW job is judged against what this app last knew,
+        // not against payload.old. Realtime only fills payload.old when the
+        // table is set to REPLICA IDENTITY FULL, and on the default setting it
+        // carries the primary key alone — so the old comparison was true on
+        // every update and the phone buzzed at the driver for a time change,
+        // a note, an office edit. This tracks it ourselves and is right either
+        // way the database is configured.
+        const lastKnownStatus = seenRidesRef.current[ride.id];
+        const firstTimeWeHaveSeenIt = lastKnownStatus === undefined;
+        const justDispatched = lastKnownStatus !== undefined
+          && lastKnownStatus !== ride.status
+          && ride.status === 'dispatched';
+        seenRidesRef.current[ride.id] = ride.status;
+
         if (['completed', 'cancelled'].includes(ride.status)) {
           setActiveRide(null);
         } else {
           setActiveRide(ride);
           // New job assigned to this driver — strong haptic alert
-          if (payload.eventType === 'INSERT' || (payload.old?.driver_id !== ride.driver_id) || (payload.old?.status !== ride.status && ride.status === 'dispatched')) {
+          if (firstTimeWeHaveSeenIt || justDispatched) {
             try {
               Haptics.impact({ style: ImpactStyle.Heavy });
               setTimeout(() => Haptics.impact({ style: ImpactStyle.Heavy }), 200);
