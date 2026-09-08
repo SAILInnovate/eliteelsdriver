@@ -29,6 +29,40 @@ import { useRideCall } from '../lib/rideCall';
 import OpsChat from '../components/OpsChat';
 import { CONDUCT_VERSION, CONDUCT_TITLE, CONDUCT_INTRO, CONDUCT_BODY } from '../content/clientConduct';
 
+// A confirmed job whose pickup was hours ago and that was never started is not
+// the job in hand — it is one the office left open. Six hours absorbs a long
+// flight delay while keeping yesterday's unclosed job off this morning's
+// screen. Only jobs never started are judged this way: once a chauffeur has
+// swiped en route, the job is theirs however long it runs.
+const STALE_AFTER_MS = 6 * 60 * 60 * 1000;
+
+// Past this, an open shift is a missed clock-off rather than a long day. The
+// same figure the office uses to decide what is fit to put on a wage run.
+const STALE_SHIFT_HOURS = 16;
+const isStaleJob = (job) =>
+  job.status === 'dispatched'
+  && !!job.scheduled_at
+  && Date.now() - new Date(job.scheduled_at).getTime() > STALE_AFTER_MS;
+
+// When a job is, in the terms a driver thinks in.
+const whenLabel = (job) => {
+  if (!job.scheduled_at) return 'Time to be confirmed';
+  const d = new Date(job.scheduled_at);
+  const today = new Date();
+  const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
+  const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+  if (d.toDateString() === today.toDateString()) return `Today · ${time}`;
+  if (d.toDateString() === tomorrow.toDateString()) return `Tomorrow · ${time}`;
+  return `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })} · ${time}`;
+};
+
+// The one ELS number both sides dial for a masked call. Twilio answers it,
+// works out who is calling from their number, and bridges them to the other
+// party — so neither the chauffeur nor the guest ever sees the other's number,
+// and it works over the carrier line where the in-app WebRTC call cannot.
+// See supabase/functions/twilio-voice in the els-elite repo.
+const MASKED_CALL_NUMBER = import.meta.env.VITE_ELS_CALL_NUMBER;
+
 // Browser notification, for the web build only — on device the same event
 // arrives as a real push (see the ride_messages / support_messages triggers).
 const webNotify = (title, body) => {
@@ -273,10 +307,72 @@ export default function PlayerPortal() {
   // Everything assigned to this driver, soonest first — the job in hand is
   // taken out of it and shown as the active card.
   const [upcomingJobs, setUpcomingJobs] = useState([]);
+  // Confirmed, long past their pickup, never started — the office's to close
+  const [staleJobs, setStaleJobs] = useState([]);
   // "Plans changed" — the job stopped following what was booked
   const [showOffPlanSheet, setShowOffPlanSheet] = useState(false);
   const [offPlanSaving, setOffPlanSaving] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  // The shift whose times are being corrected, and the values being typed.
+  const [editingShift, setEditingShift] = useState(null);
+  const [shiftEdit, setShiftEdit] = useState({ start: '', end: '', note: '' });
+  const [savingShift, setSavingShift] = useState(false);
+  // An open shift that has outlived any real working day — almost certainly a
+  // clock-off nobody pressed.
+  const [staleShift, setStaleShift] = useState(null);
+  const [shiftEditFor, setShiftEditFor] = useState(null);
+  if (editingShift && shiftEditFor !== editingShift.id) {
+    // <input type="datetime-local"> wants local wall-clock time, not an ISO
+    // string in UTC — feeding it the latter silently shifts every correction
+    // by the offset.
+    const local = (iso) => {
+      if (!iso) return '';
+      const d = new Date(iso);
+      return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    };
+    setShiftEditFor(editingShift.id);
+    setShiftEdit({ start: local(editingShift.started_at), end: local(editingShift.ended_at), note: '' });
+  }
+
+  const saveShiftTimes = async () => {
+    if (!editingShift || savingShift) return;
+    const startAt = shiftEdit.start ? new Date(shiftEdit.start) : null;
+    const endAt = shiftEdit.end ? new Date(shiftEdit.end) : null;
+    if (!startAt || isNaN(startAt)) { alert('Enter when the shift started.'); return; }
+    if (endAt && !isNaN(endAt) && endAt <= startAt) {
+      alert('The finish time has to be after the start time.');
+      return;
+    }
+    setSavingShift(true);
+    try {
+      const patch = {
+        started_at: startAt.toISOString(),
+        ended_at: endAt && !isNaN(endAt) ? endAt.toISOString() : editingShift.ended_at,
+      };
+      if (shiftEdit.note.trim()) patch.times_edit_note = shiftEdit.note.trim();
+
+      // .select() so a write RLS filtered out comes back as zero rows rather
+      // than a silent success — the same trap the push tokens fell into.
+      const { data, error } = await supabase
+        .from('driver_shifts').update(patch).eq('id', editingShift.id).select('*');
+      if (error) throw error;
+      if (!data?.length) throw new Error('That shift could not be updated.');
+
+      setShiftHistory(prev => prev.map(sh => (sh.id === data[0].id ? data[0] : sh)));
+      setEditingShift(null);
+      // Corrected, so the warning has done its job — and if they closed it,
+      // they are no longer on that shift.
+      if (staleShift?.id === data[0].id) {
+        setStaleShift(null);
+        if (data[0].ended_at) { setCurrentShiftId(null); setShiftState('OFFLINE'); }
+      }
+      triggerHaptic(ImpactStyle.Medium);
+    } catch (e) {
+      console.error('Shift correction failed:', e);
+      alert(e.message || 'That change could not be saved.');
+    }
+    setSavingShift(false);
+  };
   const [shiftHistory, setShiftHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [routeGeoJSON, setRouteGeoJSON] = useState(null);
@@ -299,26 +395,41 @@ export default function PlayerPortal() {
     enabled: !!activeRide?.id && !!user?.id
   });
 
+  // There is no phone number on the ride at all — not the passenger_phone this
+  // used to read, and not client_phone either. The guest's number lives on
+  // pa_clients.phone (office bookings) or on their own account, and a driver
+  // cannot read either table. So the test is whether there is somebody to
+  // reach: twilio-voice resolves the actual number at the moment of the call,
+  // and says so out loud if it cannot find one.
+  const guestReachable =
+    !!MASKED_CALL_NUMBER && !!(activeRide?.client_id || activeRide?.passenger_id);
+
   const phonePassenger = () => {
     call.dismissCall();
-    // '+448000000000' used to stand in here — not a dialable number, so the
-    // fallback silently failed. Only offered when we actually hold a number.
-    if (activeRide?.passenger_phone) {
-      window.location.href = `tel:${activeRide.passenger_phone}`;
+    // Dial ELS, never the guest. Twilio recognises the chauffeur's number,
+    // finds the job in hand, and rings the guest showing the ELS number —
+    // so the two of them can speak without either number changing hands.
+    if (guestReachable) {
+      window.location.href = `tel:${MASKED_CALL_NUMBER}`;
     }
   };
 
-  // Falls back to the carrier line when the passenger's app isn't connected,
-  // and again from the call screen if the connection can't be negotiated.
+  // The masked ELS line is how a call is placed. It reaches the guest whether
+  // their app is open or not, and in the airport car parks and underground
+  // ranks where there is no usable data at all — which the in-app call, for
+  // all that it is free, cannot. One tap, one behaviour, every time.
+  //
+  // The in-app call is not gone: an incoming one still rings, so a guest on an
+  // older build can still get through, and putting WebRTC back in front is a
+  // one-line change here if a TURN relay ever makes it dependable enough.
   const callPassenger = () => {
     triggerHaptic();
+    if (guestReachable) { phonePassenger(); return; }
+    // No masked line configured, or nobody on the booking to reach — the old
+    // behaviour, which at least says what it tried.
     if (call.peerOnline) { call.startCall(); return; }
-    // Show the call surface and explain, rather than opening the dialler with
-    // no sign the app tried anything.
     call.reportUnavailable(
-      activeRide?.passenger_phone
-        ? 'The passenger’s app isn’t connected right now. You can reach them by phone instead.'
-        : 'The passenger’s app isn’t connected, and we don’t have a number for them. Contact Operations.'
+      'We don’t have a way to reach the passenger for this job. Contact Operations.'
     );
   };
 
@@ -361,6 +472,14 @@ export default function PlayerPortal() {
    * driver holds two jobs — so a driver with a job now and another at four
    * o'clock saw nothing at all. The list is the source of truth; the active
    * card is derived from it.
+   *
+   * The filter is every live status rather than 'dispatched' onwards, because
+   * driver_id is the assignment and status is only how far along the job is.
+   * The office has two ways of assigning a chauffeur: the booking drawer sets
+   * driver_id and status together, but the dispatch board's driver dropdown
+   * sets driver_id alone and leaves the job 'pending' until someone confirms
+   * it — and the database pushes "New Job Assigned" off that same column. A
+   * driver was being woken for a job that then appeared nowhere in the app.
    */
   const loadAssignedJobs = useCallback(async () => {
     if (!user?.id) return;
@@ -368,20 +487,31 @@ export default function PlayerPortal() {
       .from('rides')
       .select('*')
       .eq('driver_id', user.id)
-      .in('status', ['dispatched', 'en_route', 'arrived', 'in_progress'])
+      .in('status', ['pending', 'scheduled', 'dispatched', 'en_route', 'arrived', 'in_progress'])
       .order('scheduled_at', { ascending: true, nullsFirst: false })
       .limit(50);
 
     const jobs = data || [];
-    // The job in hand is the one under way; failing that, the next dispatched.
+
+    // The job in hand is the one under way; failing that, the next confirmed
+    // job that has not already gone stale — otherwise a job left open from
+    // last Tuesday sorts first and greets the driver instead of this morning's.
+    // A 'pending' job is assigned but not yet confirmed by the office, so it
+    // waits in Coming Up rather than arriving with the journey controls on it.
     const inHand =
       jobs.find(j => ['en_route', 'arrived', 'in_progress'].includes(j.status)) ||
-      jobs.find(j => j.status === 'dispatched') ||
+      jobs.find(j => j.status === 'dispatched' && !isStaleJob(j)) ||
       null;
 
-    if (inHand) seenRidesRef.current[inHand.id] = inHand.status;
+    // Every job, not only the active one. The realtime handler treats a ride
+    // it holds no record of as newly assigned and buzzes three times for it,
+    // and a job already sitting in Coming Up is not news.
+    jobs.forEach(j => { seenRidesRef.current[j.id] = j.status; });
+
     setActiveRide(inHand);
-    setUpcomingJobs(jobs.filter(j => j.id !== inHand?.id));
+    const rest = jobs.filter(j => j.id !== inHand?.id);
+    setStaleJobs(rest.filter(isStaleJob));
+    setUpcomingJobs(rest.filter(j => !isStaleJob(j)));
   }, [user?.id]);
 
   const refreshUnreadCounts = useCallback(async () => {
@@ -645,18 +775,30 @@ export default function PlayerPortal() {
 
       await loadAssignedJobs();
 
-      // Restore active shift if the driver hasn't ended it
+      // Restore active shift if the driver hasn't ended it.
+      //
+      // A shift has no expiry, so forgetting to clock off does not correct
+      // itself: the app quietly puts you back on the same shift the next
+      // morning, and the one after that. One chauffeur was restored onto the
+      // same shift for twelve days and it reached the payroll report as 289
+      // hours. Nothing ever said so — not to him, not to the office.
+      //
+      // Still restored, because being locked out mid-shift would be worse. But
+      // one that has been running longer than any real day is now said out
+      // loud, with the times there to correct.
       const { data: shift } = await supabase.from('driver_shifts')
-        .select('id')
+        .select('*')
         .eq('driver_id', user.id)
         .is('ended_at', null)
         .order('started_at', { ascending: false })
         .limit(1)
         .maybeSingle();
-        
+
       if (shift) {
         setCurrentShiftId(shift.id);
         setShiftState('ONLINE');
+        const runningHours = (Date.now() - new Date(shift.started_at).getTime()) / 3600000;
+        setStaleShift(runningHours > STALE_SHIFT_HOURS ? shift : null);
       }
     };
     if (user) checkState();
@@ -1348,25 +1490,72 @@ export default function PlayerPortal() {
   );
 
   /**
-   * What else is on today. Deliberately quiet — enough to plan around
-   * (when, where from, where to, who) and nothing that invites acting on a
-   * job that is not the one in hand.
+   * One job, told quietly — enough to plan around (when, where from, where to,
+   * who) and nothing that invites acting on a job that is not the one in hand.
+   */
+  const renderJobCard = (job, { stale = false } = {}) => {
+    // Assigned but not yet confirmed by the office. Worth saying: the driver
+    // should not build the day around a job that may still move.
+    const unconfirmed = ['pending', 'scheduled'].includes(job.status);
+
+    return (
+      <div
+        key={job.id}
+        style={{
+          border: stale ? '1px solid rgba(180,120,60,0.35)' : '1px solid rgba(0,0,0,0.10)',
+          borderRadius: '14px',
+          padding: '14px 16px',
+          background: stale ? 'rgba(180,120,60,0.04)' : '#FFF'
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px', marginBottom: '8px' }}>
+          <span style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#000' }}>{whenLabel(job)}</span>
+          <span style={{ fontSize: '0.5625rem', fontWeight: 700, letterSpacing: '1px', textTransform: 'uppercase', color: '#8A7355' }}>
+            {job.booking_reference || job.status}
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', gap: '10px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '4px' }}>
+            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#000' }} />
+            <span style={{ width: '1px', flex: 1, minHeight: '16px', background: 'rgba(0,0,0,0.15)' }} />
+            <span style={{ width: '6px', height: '6px', borderRadius: '50%', border: '1.5px solid #000' }} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <span style={{ fontSize: '0.8125rem', color: '#000', lineHeight: 1.35 }}>
+              {job.pickup_address?.split(',')[0] || 'Pickup to be confirmed'}
+            </span>
+            <span style={{ fontSize: '0.8125rem', color: '#555', lineHeight: 1.35 }}>
+              {job.dropoff_address?.split(',')[0] || 'As directed'}
+            </span>
+          </div>
+        </div>
+
+        {(job.client_name || job.vehicle_reg || unconfirmed) && (
+          <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(0,0,0,0.06)', display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center' }}>
+            {job.client_name && (
+              <span style={{ fontSize: '0.6875rem', color: '#666' }}>{job.client_name}</span>
+            )}
+            {job.vehicle_reg && (
+              <span style={{ fontSize: '0.6875rem', color: '#666', letterSpacing: '1px' }}>{job.vehicle_reg}</span>
+            )}
+            {unconfirmed && (
+              <span style={{ fontSize: '0.625rem', color: '#8A7355', letterSpacing: '1px', textTransform: 'uppercase', fontWeight: 700 }}>
+                Awaiting confirmation
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  /**
+   * What else is on — the days ahead, and anything the office left open behind
+   * us. Deliberately quiet: nothing here starts a job.
    */
   const renderUpcoming = () => {
-    if (upcomingJobs.length === 0) return null;
-
-    const when = (job) => {
-      if (!job.scheduled_at) return 'Time to be confirmed';
-      const d = new Date(job.scheduled_at);
-      const today = new Date();
-      const sameDay = d.toDateString() === today.toDateString();
-      const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
-      const isTomorrow = d.toDateString() === tomorrow.toDateString();
-      const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
-      if (sameDay) return `Today · ${time}`;
-      if (isTomorrow) return `Tomorrow · ${time}`;
-      return `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })} · ${time}`;
-    };
+    if (upcomingJobs.length === 0 && staleJobs.length === 0) return null;
 
     return (
       <motion.div
@@ -1374,64 +1563,51 @@ export default function PlayerPortal() {
         transition={{ delay: 0.15, duration: 0.4 }}
         style={{ marginTop: '28px' }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-          <span style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '2.5px', textTransform: 'uppercase', color: '#8A7355' }}>
-            Coming Up
-          </span>
-          <span style={{ fontSize: '0.6875rem', color: '#888' }}>
-            {upcomingJobs.length} job{upcomingJobs.length === 1 ? '' : 's'}
-          </span>
-        </div>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          {upcomingJobs.map(job => (
-            <div
-              key={job.id}
-              style={{
-                border: '1px solid rgba(0,0,0,0.10)', borderRadius: '14px',
-                padding: '14px 16px', background: '#FFF'
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px', marginBottom: '8px' }}>
-                <span style={{ fontSize: '0.8125rem', fontWeight: 700, color: '#000' }}>{when(job)}</span>
-                <span style={{ fontSize: '0.5625rem', fontWeight: 700, letterSpacing: '1px', textTransform: 'uppercase', color: '#8A7355' }}>
-                  {job.booking_reference || job.status}
-                </span>
-              </div>
-
-              <div style={{ display: 'flex', gap: '10px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: '4px' }}>
-                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#000' }} />
-                  <span style={{ width: '1px', flex: 1, minHeight: '16px', background: 'rgba(0,0,0,0.15)' }} />
-                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', border: '1.5px solid #000' }} />
-                </div>
-                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <span style={{ fontSize: '0.8125rem', color: '#000', lineHeight: 1.35 }}>
-                    {job.pickup_address?.split(',')[0] || 'Pickup to be confirmed'}
-                  </span>
-                  <span style={{ fontSize: '0.8125rem', color: '#555', lineHeight: 1.35 }}>
-                    {job.dropoff_address?.split(',')[0] || 'As directed'}
-                  </span>
-                </div>
-              </div>
-
-              {(job.client_name || job.vehicle_reg) && (
-                <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid rgba(0,0,0,0.06)', display: 'flex', gap: '14px', flexWrap: 'wrap' }}>
-                  {job.client_name && (
-                    <span style={{ fontSize: '0.6875rem', color: '#666' }}>{job.client_name}</span>
-                  )}
-                  {job.vehicle_reg && (
-                    <span style={{ fontSize: '0.6875rem', color: '#666', letterSpacing: '1px' }}>{job.vehicle_reg}</span>
-                  )}
-                </div>
-              )}
+        {/* A confirmed job whose pickup has long passed and that was never
+            started is not tomorrow's work and it is not the job in hand — it
+            is something the office has to close off. Saying so beats letting
+            it sit at the top of Coming Up looking like the next journey. */}
+        {staleJobs.length > 0 && (
+          <div style={{ marginBottom: upcomingJobs.length > 0 ? '28px' : 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+              <span style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '2.5px', textTransform: 'uppercase', color: '#B4783C' }}>
+                Still Open
+              </span>
+              <span style={{ fontSize: '0.6875rem', color: '#888' }}>
+                {staleJobs.length} job{staleJobs.length === 1 ? '' : 's'}
+              </span>
             </div>
-          ))}
-        </div>
 
-        <p style={{ fontSize: '0.6875rem', color: '#888', textAlign: 'center', marginTop: '14px', marginBottom: 0 }}>
-          These open when the job in hand is finished.
-        </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {staleJobs.map(job => renderJobCard(job, { stale: true }))}
+            </div>
+
+            <p style={{ fontSize: '0.6875rem', color: '#888', textAlign: 'center', marginTop: '14px', marginBottom: 0 }}>
+              Past their pickup and never started. Message Operations if this looks wrong.
+            </p>
+          </div>
+        )}
+
+        {upcomingJobs.length > 0 && (
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+              <span style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '2.5px', textTransform: 'uppercase', color: '#8A7355' }}>
+                Coming Up
+              </span>
+              <span style={{ fontSize: '0.6875rem', color: '#888' }}>
+                {upcomingJobs.length} job{upcomingJobs.length === 1 ? '' : 's'}
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {upcomingJobs.map(job => renderJobCard(job))}
+            </div>
+
+            <p style={{ fontSize: '0.6875rem', color: '#888', textAlign: 'center', marginTop: '14px', marginBottom: 0 }}>
+              These open when the job in hand is finished.
+            </p>
+          </div>
+        )}
       </motion.div>
     );
   };
@@ -2251,6 +2427,44 @@ export default function PlayerPortal() {
 
         {shiftState === 'ONLINE' && (
           <>
+            {/* Clocked on since some day last week. Said here rather than left
+                to surface as an unanswerable number on a wage run — the
+                chauffeur is the only person who knows when the day actually
+                ended, and the only one who can put it right. */}
+            {staleShift && (
+              <motion.div
+                initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
+                style={{
+                  width: '100%', padding: '14px 16px', marginBottom: '12px',
+                  background: 'rgba(179,38,30,0.08)', border: '1px solid rgba(179,38,30,0.35)',
+                  borderRadius: '8px', color: '#B3261E', textAlign: 'left'
+                }}
+              >
+                <div style={{ fontWeight: 700, fontSize: '0.8125rem', marginBottom: '4px' }}>
+                  Still clocked on since{' '}
+                  {new Date(staleShift.started_at).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}
+                </div>
+                <div style={{ fontSize: '0.78rem', lineHeight: 1.5, marginBottom: '10px', color: '#8A2F2A' }}>
+                  That is {Math.floor((Date.now() - new Date(staleShift.started_at).getTime()) / 3600000)} hours.
+                  If you forgot to clock off, set when the shift really finished — it will not be paid until you do.
+                </div>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button
+                    onClick={() => { triggerHaptic(); setEditingShift(staleShift); }}
+                    style={{ padding: '9px 14px', border: 'none', borderRadius: '8px', background: '#B3261E', color: '#FFF', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' }}
+                  >
+                    Set the finish time
+                  </button>
+                  <button
+                    onClick={() => { triggerHaptic(); setStaleShift(null); }}
+                    style={{ padding: '9px 14px', border: '1px solid rgba(179,38,30,0.35)', borderRadius: '8px', background: 'transparent', color: '#B3261E', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' }}
+                  >
+                    I am still on this shift
+                  </button>
+                </div>
+              </motion.div>
+            )}
+
             {locationStatus.permissionDenied ? (
               <motion.button
                 initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }}
@@ -2517,6 +2731,81 @@ export default function PlayerPortal() {
 
       {/* Shift History Overlay */}
       <AnimatePresence>
+        {editingShift && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => !savingShift && setEditingShift(null)}
+            style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'flex-end' }}
+          >
+            <motion.div
+              initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 28, stiffness: 320 }}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                width: '100%', background: '#FFF', borderRadius: '20px 20px 0 0',
+                padding: '24px', paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 24px)',
+                boxSizing: 'border-box', overflowX: 'hidden'
+              }}
+            >
+              <div style={{ fontFamily: 'var(--font-display), serif', fontSize: '1.125rem', color: '#000', marginBottom: '6px' }}>
+                Correct your hours
+              </div>
+              <div style={{ fontSize: '0.8125rem', color: '#777', lineHeight: 1.5, marginBottom: '20px' }}>
+                Put in what actually happened. The office sees that the times were
+                corrected, and what was first clocked.
+              </div>
+
+              <label style={{ display: 'block', marginBottom: '14px' }}>
+                <span style={{ display: 'block', fontSize: '0.75rem', color: '#777', marginBottom: '6px' }}>Started</span>
+                <input
+                  type="datetime-local"
+                  value={shiftEdit.start}
+                  onChange={(e) => setShiftEdit(v => ({ ...v, start: e.target.value }))}
+                  style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box', padding: '13px 14px', fontSize: '1rem', border: '1px solid #E0E0E0', borderRadius: '10px', outline: 'none', fontFamily: 'inherit' }}
+                />
+              </label>
+
+              <label style={{ display: 'block', marginBottom: '14px' }}>
+                <span style={{ display: 'block', fontSize: '0.75rem', color: '#777', marginBottom: '6px' }}>Finished</span>
+                <input
+                  type="datetime-local"
+                  value={shiftEdit.end}
+                  onChange={(e) => setShiftEdit(v => ({ ...v, end: e.target.value }))}
+                  style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box', padding: '13px 14px', fontSize: '1rem', border: '1px solid #E0E0E0', borderRadius: '10px', outline: 'none', fontFamily: 'inherit' }}
+                />
+              </label>
+
+              <label style={{ display: 'block', marginBottom: '20px' }}>
+                <span style={{ display: 'block', fontSize: '0.75rem', color: '#777', marginBottom: '6px' }}>Why — optional</span>
+                <input
+                  type="text"
+                  value={shiftEdit.note}
+                  placeholder="Forgot to clock off"
+                  onChange={(e) => setShiftEdit(v => ({ ...v, note: e.target.value }))}
+                  style={{ width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box', padding: '13px 14px', fontSize: '1rem', border: '1px solid #E0E0E0', borderRadius: '10px', outline: 'none', fontFamily: 'inherit' }}
+                />
+              </label>
+
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  onClick={() => setEditingShift(null)}
+                  disabled={savingShift}
+                  style={{ flex: 1, padding: '15px', background: '#FAFAFA', border: '1px solid #EFEFEF', borderRadius: '12px', color: '#555', fontWeight: 600, fontSize: '0.875rem', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={saveShiftTimes}
+                  disabled={savingShift}
+                  style={{ flex: 2, padding: '15px', background: savingShift ? '#999' : '#000', border: 'none', borderRadius: '12px', color: '#FFF', fontWeight: 600, fontSize: '0.875rem', cursor: savingShift ? 'wait' : 'pointer' }}
+                >
+                  {savingShift ? 'Saving…' : 'Save correction'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
         {showHistory && (
           <motion.div 
             initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }} 
@@ -2606,6 +2895,22 @@ export default function PlayerPortal() {
                               <span style={{ ...valueStyle, letterSpacing: '1px' }}>{shift.car_reg}</span>
                             </div>
                           )}
+                          {/* Already corrected once. Shown to the chauffeur as
+                              well as the office: they should know the record
+                              carries what they first clocked, not only what
+                              they changed it to. */}
+                          {shift.times_edited_at && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#8A6D3B', fontSize: '0.7rem', marginTop: '8px' }}>
+                              <Clock size={12} />
+                              Times corrected {new Date(shift.times_edited_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                              {shift.original_started_at && (
+                                <span style={{ color: '#999' }}>
+                                  · originally {new Date(shift.original_started_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                                  {shift.original_ended_at ? `–${new Date(shift.original_ended_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : ''}
+                                </span>
+                              )}
+                            </div>
+                          )}
                           {shift.has_problem && (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#EF4444', fontSize: '0.75rem', marginTop: '6px' }}>
                               <AlertTriangle size={13} /> {t('problemReported')}
@@ -2617,6 +2922,25 @@ export default function PlayerPortal() {
                             </div>
                           )}
                         </div>
+
+                        {/* A forgotten clock-out is the everyday case, and
+                            making the office repair each one by hand is worse
+                            than letting the chauffeur say what actually
+                            happened. The correction is recorded either way —
+                            the database stamps it, not this screen. */}
+                        {end && (
+                          <button
+                            onClick={() => { triggerHaptic(); setEditingShift(shift); }}
+                            style={{
+                              marginTop: '12px', width: '100%', padding: '10px',
+                              background: 'transparent', border: '1px solid rgba(0,0,0,0.12)',
+                              borderRadius: '10px', color: '#444', fontSize: '0.75rem',
+                              fontWeight: 600, cursor: 'pointer'
+                            }}
+                          >
+                            Correct these times
+                          </button>
+                        )}
 
                         {/* Video Links */}
                         {(shift.pre_shift_video_url || shift.post_shift_video_url) && (
@@ -2783,7 +3107,7 @@ export default function PlayerPortal() {
             onDecline={call.declineCall}
             onEnd={call.endCall}
             onToggleMute={call.toggleMute}
-            onCallByPhone={activeRide?.passenger_phone ? phonePassenger : undefined}
+            onCallByPhone={guestReachable ? phonePassenger : undefined}
             onDismiss={call.dismissCall}
           />
         )}
