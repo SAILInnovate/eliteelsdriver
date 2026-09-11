@@ -1327,19 +1327,28 @@ export default function PlayerPortal() {
     } else if (status === 'completed') {
       extraPayload.dropoff_at = new Date().toISOString();
 
-      // Automatically calculate route distance via OSRM
+      // Automatically calculate route distance via OSRM — pickup to drop-off,
+      // which is the distance the job is billed on.
+      //
+      // This used to parse the coordinates with its own `c.split(',')`, and a
+      // coords column never comes back in that shape: PostGIS returns
+      // 'POINT(lon lat)', hex WKB or GeoJSON. So the OSRM URL was built as
+      // ".../driving/undefined,POINT(-2.2560 53.4869);..." on every single
+      // job, the request failed, and nothing was ever written to
+      // total_mileage. The office then had no recorded distance and fell back
+      // to the raw GPS trail — which starts when the job is accepted, so it
+      // counted the drive out to the pickup as part of the journey. That is
+      // how a 3.6 mile run from CitySuites to the CFA was recorded as 9.5.
+      //
+      // extractCoords is the parser the rest of this screen already uses for
+      // the same columns, and it handles all three shapes. It returns
+      // [lat, lon]; OSRM wants lon,lat.
       if (activeRide.pickup_coords && activeRide.dropoff_coords) {
         try {
-          const parseCoords = (c) => {
-            if (typeof c === 'string') return c.split(',');
-            if (c && c.lat) return [c.lat, c.lng];
-            return null;
-          };
-          const p = parseCoords(activeRide.pickup_coords);
-          const d = parseCoords(activeRide.dropoff_coords);
-          
+          const p = extractCoords(activeRide.pickup_coords);
+          const d = extractCoords(activeRide.dropoff_coords);
+
           if (p && d) {
-            // OSRM requires longitude,latitude
             const url = `https://router.project-osrm.org/route/v1/driving/${p[1]},${p[0]};${d[1]},${d[0]}?overview=false`;
             const res = await fetch(url);
             const data = await res.json();
@@ -1347,7 +1356,13 @@ export default function PlayerPortal() {
               const miles = (data.routes[0].distance * 0.000621371).toFixed(2);
               extraPayload.distance_miles = parseFloat(miles);
               extraPayload.total_mileage = parseFloat(miles);
+            } else {
+              // Said out loud rather than swallowed: a job that completes with
+              // no distance is one the office has to price by hand.
+              console.warn('No route returned for ride distance:', data?.code || 'unknown', activeRide.id);
             }
+          } else {
+            console.warn('Ride has no usable pickup/dropoff coordinates, distance not recorded:', activeRide.id);
           }
         } catch (e) {
           console.warn('Failed to calculate automated distance:', e);
