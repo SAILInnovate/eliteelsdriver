@@ -4,6 +4,7 @@ import { X, Upload, Check, ChevronRight, Globe, User, FileText, Camera, Shield, 
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
+import { useSignedUrl } from '../lib/storageUrl';
 import { Haptics, ImpactStyle } from '@capacitor/haptics';
 
 const LANG_LABELS = { en: 'English', de: 'Deutsch', es: 'Español', fr: 'Français', ar: 'العربية' };
@@ -82,6 +83,10 @@ export default function DriverProfileDrawer({ open, onClose, onSignOut, profile 
     loadDocs();
   }, [open, user]);
 
+  // The bucket is private, so the stored path has to be signed before it
+  // can be shown. Re-signs itself whenever a new photo is uploaded.
+  const photoUrl = useSignedUrl(docs.profile_photo?.file_url);
+
   const triggerHaptic = () => { try { Haptics.impact({ style: ImpactStyle.Light }); } catch(e){} };
 
   const handleUpload = async (e) => {
@@ -95,13 +100,13 @@ export default function DriverProfileDrawer({ open, onClose, onSignOut, profile 
     const { error: uploadErr } = await supabase.storage.from('audits').upload(path, file);
     if (uploadErr) { setUploading(null); return; }
 
-    const { data: urlData } = supabase.storage.from('audits').getPublicUrl(path);
-
+    // Private bucket: store the object path, not a URL anyone could follow.
+    // Anything displaying this signs it at the point of display.
     // Upsert doc record
     const { error: dbError } = await supabase.from('driver_documents').upsert({
       driver_id: user.id,
       doc_type: uploadTarget,
-      file_url: urlData.publicUrl,
+      file_url: path,
       uploaded_at: new Date().toISOString()
     }, { onConflict: 'driver_id,doc_type' });
 
@@ -113,7 +118,7 @@ export default function DriverProfileDrawer({ open, onClose, onSignOut, profile 
       return;
     }
 
-    setDocs(prev => ({ ...prev, [uploadTarget]: { file_url: urlData.publicUrl, uploaded_at: new Date().toISOString() } }));
+    setDocs(prev => ({ ...prev, [uploadTarget]: { file_url: path, uploaded_at: new Date().toISOString() } }));
     setUploading(null);
     setUploadTarget(null);
     triggerHaptic();
@@ -166,14 +171,14 @@ export default function DriverProfileDrawer({ open, onClose, onSignOut, profile 
                   onClick={() => { setUploadTarget('profile_photo'); fileRef.current?.click(); triggerHaptic(); }}
                   style={{
                     width: '80px', height: '80px', borderRadius: '40px',
-                    background: docs.profile_photo?.file_url ? `url(${docs.profile_photo.file_url}) center/cover` : 'rgba(0,0,0,0.06)',
+                    background: photoUrl ? `url(${photoUrl}) center/cover` : 'rgba(0,0,0,0.06)',
                     border: docs.profile_photo ? '1.5px solid rgba(138,115,85,0.5)' : '2px dashed rgba(0,0,0,0.15)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                     cursor: 'pointer', transition: '0.3s',
                     position: 'relative', overflow: 'hidden'
                   }}
                 >
-                  {!docs.profile_photo?.file_url && <Camera size={24} color="#555" />}
+                  {!photoUrl && <Camera size={24} color="#555" />}
                   {uploading === 'profile_photo' && (
                     <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                       <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: 'linear' }} style={{ width: '24px', height: '24px', border: '2px solid transparent', borderTopColor: '#D4CFC9', borderRadius: '50%' }} />

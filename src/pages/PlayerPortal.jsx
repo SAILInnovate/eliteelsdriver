@@ -6,6 +6,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
+import { useSignedUrl } from '../lib/storageUrl';
 import { useKeyboardOverlap } from '../lib/keyboard';
 import { openWhatsApp, OFFICE_WHATSAPP_DISPLAY } from '../lib/capacitor';
 import useLocation from '../hooks/useLocation';
@@ -191,7 +192,21 @@ const SwipeButton = ({ text, onComplete, variant = 'primary', resetOnComplete = 
 // Opens the NATIVE iOS camera (UIImagePickerController) via a capture file
 // input — no in-webview getUserMedia preview, so it looks and feels like the
 // system camera. We only handle the upload once the driver taps "Use Video".
-const VideoRecorderOverlay = ({ onUploadComplete, onClose }) => {
+// A walk-around video lives in a private bucket, so the link has to be signed
+// before it will open. Until it is, the row is shown greyed rather than as a
+// link that goes nowhere.
+const SignedVideoLink = ({ stored, label }) => {
+  const url = useSignedUrl(stored);
+  const style = { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 0', color: '#666', fontSize: '0.75rem', fontWeight: 500, letterSpacing: '0.5px', textDecoration: 'none' };
+  if (!url) return <div style={{ ...style, opacity: 0.5 }}><Video size={14} color="#D4CFC9" /> {label}</div>;
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer" style={style}>
+      <Video size={14} color="#D4CFC9" /> {label}
+    </a>
+  );
+};
+
+const VideoRecorderOverlay = ({ userId, onUploadComplete, onClose }) => {
   const inputRef = useRef(null);
   const [uploading, setUploading] = useState(false);
 
@@ -214,12 +229,15 @@ const VideoRecorderOverlay = ({ onUploadComplete, onClose }) => {
     const ext = contentType.includes('quicktime') ? 'mov'
       : contentType.includes('webm') ? 'webm'
       : (file.name?.split('.').pop()?.toLowerCase() || 'mp4');
-    const fileName = `audit_${Date.now()}.${ext}`;
+    // Under the chauffeur's own folder, so the storage policies can tell whose
+    // it is from the path alone. These used to land in the bucket root, where
+    // they could not be attributed to anybody.
+    const fileName = `drivers/${userId}/audit_${Date.now()}.${ext}`;
     try {
       const { error } = await supabase.storage.from('audits').upload(fileName, file, { contentType });
       if (error) throw error;
-      const { data: publicUrl } = supabase.storage.from('audits').getPublicUrl(fileName);
-      onUploadComplete(publicUrl.publicUrl);
+      // The bucket is private: store the path and sign it when it is watched.
+      onUploadComplete(fileName);
     } catch (err) {
       alert("Upload failed: " + err.message);
       onClose();
@@ -2716,6 +2734,7 @@ export default function PlayerPortal() {
 
       {showCameraFor && (
         <VideoRecorderOverlay 
+          userId={user?.id}
           onClose={() => setShowCameraFor(null)} 
           onUploadComplete={(url) => { 
             if (showCameraFor === 'pre') {
@@ -2946,14 +2965,10 @@ export default function PlayerPortal() {
                         {(shift.pre_shift_video_url || shift.post_shift_video_url) && (
                           <div style={{ display: 'flex', flexDirection: 'column', marginTop: '10px', paddingTop: '4px', borderTop: '1px solid rgba(0,0,0,0.05)' }}>
                             {shift.pre_shift_video_url && (
-                              <a href={shift.pre_shift_video_url} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 0', color: '#666', fontSize: '0.75rem', fontWeight: 500, letterSpacing: '0.5px', textDecoration: 'none' }}>
-                                <Video size={14} color="#D4CFC9" /> {t('preShiftVideo')}
-                              </a>
+                              <SignedVideoLink stored={shift.pre_shift_video_url} label={t('preShiftVideo')} />
                             )}
                             {shift.post_shift_video_url && (
-                              <a href={shift.post_shift_video_url} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 0', color: '#666', fontSize: '0.75rem', fontWeight: 500, letterSpacing: '0.5px', textDecoration: 'none' }}>
-                                <Video size={14} color="#D4CFC9" /> {t('postShiftVideo')}
-                              </a>
+                              <SignedVideoLink stored={shift.post_shift_video_url} label={t('postShiftVideo')} />
                             )}
                           </div>
                         )}

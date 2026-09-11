@@ -165,17 +165,18 @@ export default function CompleteProfilePage({ onComplete }) {
             const { error: uploadErr } = await supabase.storage.from('audits').upload(path, file);
             if (uploadErr) throw uploadErr;
 
-            const { data: urlData } = supabase.storage.from('audits').getPublicUrl(path);
-
+            // The bucket is private, so what goes in the database is the object
+            // path. A public URL would be a link to a driving licence that
+            // anyone could follow; it is also now a link that 400s.
             const { error: dbError } = await supabase.from('driver_documents').upsert({
                 driver_id: user.id,
                 doc_type: 'driving_licence',
-                file_url: urlData.publicUrl,
+                file_url: path,
                 uploaded_at: new Date().toISOString()
             }, { onConflict: 'driver_id,doc_type' });
             if (dbError) throw dbError;
 
-            setLicenceDoc({ file_url: urlData.publicUrl });
+            setLicenceDoc({ file_url: path });
             hapticNotify(NotificationType.Success);
         } catch (err) {
             console.error(err);
