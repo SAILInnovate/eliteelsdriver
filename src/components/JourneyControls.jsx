@@ -10,7 +10,13 @@ import { Haptics, ImpactStyle } from '@capacitor/haptics';
  */
 function SwipeAction({ label, onComplete, direction = 'right', size = 'lg', variant = 'primary', icon }) {
   // Remembering *which* action was confirmed re-arms the control for free when
-  // the next step arrives, with no reset effect.
+  // the next step arrives, with no reset effect. But this state only reset
+  // correctly when the action's label changed — if the SAME label came back
+  // (e.g. "Arrived at Pickup" after the driver undid an arrival), the stale
+  // confirmed flag would lock the swipe and stop the driver going forward.
+  // The `key={...}` on each use (the action's identity) remounts this component
+  // whenever a step appears, clearing the confirmed flag so every occurrence is
+  // swipeable again.
   const [confirmedLabel, setConfirmedLabel] = useState(null);
   const done = confirmedLabel === label;
   const containerRef = useRef(null);
@@ -122,6 +128,7 @@ export default function JourneyControls({ forward, back, stepOut, waitingSince, 
 
       {forward && (
         <SwipeAction
+          key={forward.key}
           label={forward.label}
           variant={forward.variant}
           onComplete={() => onAction(forward.key)}
@@ -130,11 +137,12 @@ export default function JourneyControls({ forward, back, stepOut, waitingSince, 
 
       {(back || stepOut) && (
         <div style={{ marginTop: '14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          <div style={{ textAlign: 'center', fontSize: '0.625rem', fontWeight: 600, letterSpacing: '1.5px', color: '#999', textTransform: 'uppercase' }}>
+          <div style={{ textAlign: 'center', fontSize: '0.625rem', fontWeight: 600, letterSpacing: '1.5px', color: '#666', textTransform: 'uppercase' }}>
             Plans changed?
           </div>
           {stepOut && (
             <SwipeAction
+              key={stepOut.key}
               size="sm"
               label={stepOut.label}
               icon={<LogOut color="#D4CFC9" size={20} />}
@@ -143,6 +151,7 @@ export default function JourneyControls({ forward, back, stepOut, waitingSince, 
           )}
           {back && (
             <SwipeAction
+              key={back.key}
               size="sm"
               direction="left"
               label={back.label}

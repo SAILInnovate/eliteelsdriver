@@ -1,12 +1,26 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { PushNotifications } from '@capacitor/push-notifications';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
 import { Capacitor } from '@capacitor/core';
 import { App } from '@capacitor/app';
 
-export default function usePushNotifications() {
+/**
+ * Registers the device for push and keeps the token on the driver's row.
+ *
+ * Two callbacks, because a push on its own isn't enough for a driver:
+ *   onReceived — the push landed while the app was open. iOS shows nothing
+ *                in that case, so the caller raises its own in-app toast.
+ *   onOpened   — the driver tapped the push from the lock screen or banner;
+ *                the caller decides which screen that should open.
+ */
+export default function usePushNotifications({ onReceived, onOpened } = {}) {
   const { session } = useAuth();
+  // Held in refs so a re-created callback never tears down the listeners
+  const receivedRef = useRef(onReceived);
+  const openedRef = useRef(onOpened);
+  receivedRef.current = onReceived;
+  openedRef.current = onOpened;
 
   useEffect(() => {
     // Push notifications are only available on physical devices natively.
@@ -34,16 +48,21 @@ export default function usePushNotifications() {
         let bundleId = null;
         try { bundleId = (await App.getInfo()).id; } catch (_) { bundleId = null; }
         console.log('Push registration success, token: ' + token.value);
-        // Save the device token + platform so the send-push pipeline can
-        // route it (ios -> APNs). Token can rotate — always overwrite.
-        const { error } = await supabase.from('global_users').update({
-          push_token: token.value,
-          push_platform: Capacitor.getPlatform(),
-          push_bundle_id: bundleId,
-        }).eq('id', session.user.id);
-        
+        // Through save_push_token(), not a table write: global_users has no
+        // self-UPDATE policy (and must not have one — it holds `role`), so a
+        // direct update is silently reduced to zero rows by RLS for everyone
+        // who isn't an admin, with no error to log. Every driver token was
+        // lost that way. The RPC says what happened.
+        const { data, error } = await supabase.rpc('save_push_token', {
+          p_token: token.value,
+          p_platform: Capacitor.getPlatform(),
+          p_bundle_id: bundleId,
+        });
+
         if (error) {
-           console.error('Error saving push token', error);
+          console.error('Error saving push token', error);
+        } else if (data && data.saved === false) {
+          console.error('Push token not saved:', data.reason);
         }
       });
 
@@ -52,13 +71,12 @@ export default function usePushNotifications() {
       });
 
       await PushNotifications.addListener('pushNotificationReceived', (notification) => {
-        console.log('Push received: ', notification);
-        // You can show a local toast here if the app is open
+        // Foreground push: the system banner is suppressed, so hand it up.
+        try { receivedRef.current?.(notification); } catch (e) { console.warn('push received handler failed', e); }
       });
 
-      await PushNotifications.addListener('pushNotificationActionPerformed', (notification) => {
-        console.log('Push action performed: ', notification.actionId, notification.inputValue);
-        // Navigate to specific ride or chat based on payload
+      await PushNotifications.addListener('pushNotificationActionPerformed', (action) => {
+        try { openedRef.current?.(action?.notification, action); } catch (e) { console.warn('push open handler failed', e); }
       });
     };
 

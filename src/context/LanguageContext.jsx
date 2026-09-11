@@ -1,8 +1,8 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import translations from '../i18n/translations';
 
-const SUPPORTED = ['en', 'de', 'es', 'fr', 'ar', 'ur'];
-const RTL_LANGS = ['ar', 'ur'];
+const SUPPORTED = ['en', 'de', 'es', 'fr', 'ar'];
+const RTL_LANGS = ['ar'];
 
 function detectLanguage() {
   // Check localStorage first (user override)

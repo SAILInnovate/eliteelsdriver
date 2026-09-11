@@ -4,6 +4,11 @@
 <dict>
 	<key>CAPACITOR_DEBUG</key>
 	<string>$(CAPACITOR_DEBUG)</string>
+	<!-- The app uses only the HTTPS/TLS provided by the OS, so it qualifies
+	     for the standard exemption. Declaring it here stops App Store Connect
+	     asking on every single upload. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
@@ -25,6 +30,12 @@
 	<key>INIntentsSupported</key>
 	<array>
 		<string>Intent</string>
+	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>waze</string>
+		<string>comgooglemaps</string>
+		<string>maps</string>
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>

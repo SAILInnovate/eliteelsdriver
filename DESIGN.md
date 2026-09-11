@@ -153,11 +153,19 @@ The app must be **interactive within 3 seconds** of cold launch on an iPhone 12.
 
 ## Architecture
 
-### Client App (This Repo)
+> **Status note (reconciled with the shipped build):** the rider app is in
+> `SAILInnovate/els-elite`; **this repo is the driver app.** See `eliteelsdriver`,
+> `com.eliteels.driver`. The implemented driver surface is the **light champagne**
+> system with precise rounded sheets (not the sharp/dark variant described above) —
+> chosen for daylight legibility for a driver glancing at the screen in a moving car.
+
+### Client App (els-elite repo)
 The rider-facing Capacitor app. Read-only for rates. Writes rides.
 
-### Driver App (Future)
-Separate app. Subscribes to `rides` where `status = 'pending'`. Updates timing fields, GPS breadcrumbs, status events.
+### Driver App (This repo — implemented)
+`eliteelsdriver`. Journeys are assigned by Operations (no accept/decline); the driver
+progresses a shared timeline via the swipe-to-confirm `JourneyControls`, tracks flight
+status and guest briefs, logs expenses, and ends shifts with a mandatory vehicle scan.
 
 ### Club Dashboard (Future)
 Web dashboard for club admins. Queries rides by `corporate_account_id`. Views all players, all rides, all drivers.

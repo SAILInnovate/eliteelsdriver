@@ -89,7 +89,7 @@ export default function FlightStatusCard({ flightNumber, pickupTime, rideId, acc
 
   if (!flightNumber) return null;
 
-  const meta = STATUS_META[flight?.flight_status] || { label: 'Tracking', color: '#9A938A' };
+  const meta = STATUS_META[flight?.flight_status] || { label: 'Tracking', color: '#6B6B6B' };
   const progress = PROGRESS[flight?.flight_status] ?? 0.06;
   const delay = Number(flight?.arrival?.delay) || 0;
   const arrTime = localTime(flight?.arrival?.estimated) || localTime(flight?.arrival?.scheduled);
@@ -107,7 +107,7 @@ export default function FlightStatusCard({ flightNumber, pickupTime, rideId, acc
             Flight {String(flightNumber).toUpperCase()}
           </span>
           {flight?.airline?.name && (
-            <span style={{ fontSize: '0.625rem', color: '#9A938A', letterSpacing: '0.5px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <span style={{ fontSize: '0.625rem', color: '#6B6B6B', letterSpacing: '0.5px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {flight.airline.name}
             </span>
           )}
@@ -128,7 +128,7 @@ export default function FlightStatusCard({ flightNumber, pickupTime, rideId, acc
               <div style={{ fontFamily: 'var(--font-display), serif', fontSize: '1.625rem', fontWeight: 500, color: '#000', lineHeight: 1 }}>
                 {flight.departure?.iata || '—'}
               </div>
-              <div style={{ fontSize: '0.6875rem', color: '#9A938A', marginTop: '5px', letterSpacing: '0.3px' }}>{depTime || '—'}</div>
+              <div style={{ fontSize: '0.6875rem', color: '#6B6B6B', marginTop: '5px', letterSpacing: '0.3px' }}>{depTime || '—'}</div>
             </div>
 
             <div style={{ flex: 1, position: 'relative', height: '16px', display: 'flex', alignItems: 'center' }}>
@@ -152,15 +152,15 @@ export default function FlightStatusCard({ flightNumber, pickupTime, rideId, acc
           {/* Arrival details the chauffeur actually needs */}
           <div style={{ display: 'flex', gap: '20px', marginTop: '16px', paddingTop: '14px', borderTop: `1px solid ${border}` }}>
             <div>
-              <div style={{ fontSize: '0.5625rem', fontWeight: 700, letterSpacing: '1.5px', textTransform: 'uppercase', color: '#9A938A', marginBottom: '3px' }}>Arrives</div>
+              <div style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '1.5px', textTransform: 'uppercase', color: '#6B6B6B', marginBottom: '3px' }}>Arrives</div>
               <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#000' }}>{flight.arrival?.airport || '—'}</div>
             </div>
             <div style={{ flexShrink: 0 }}>
-              <div style={{ fontSize: '0.5625rem', fontWeight: 700, letterSpacing: '1.5px', textTransform: 'uppercase', color: '#9A938A', marginBottom: '3px' }}>Terminal</div>
+              <div style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '1.5px', textTransform: 'uppercase', color: '#6B6B6B', marginBottom: '3px' }}>Terminal</div>
               <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#000' }}>{flight.arrival?.terminal || 'TBA'}</div>
             </div>
             <div style={{ flexShrink: 0 }}>
-              <div style={{ fontSize: '0.5625rem', fontWeight: 700, letterSpacing: '1.5px', textTransform: 'uppercase', color: '#9A938A', marginBottom: '3px' }}>Gate</div>
+              <div style={{ fontSize: '0.625rem', fontWeight: 700, letterSpacing: '1.5px', textTransform: 'uppercase', color: '#6B6B6B', marginBottom: '3px' }}>Gate</div>
               <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#000' }}>{flight.arrival?.gate || 'TBA'}</div>
             </div>
           </div>

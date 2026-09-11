@@ -164,7 +164,7 @@ export default function RideChat({ rideId, userId, driverName, onClose }) {
           <div style={{ fontSize: '0.6875rem', letterSpacing: '3px', color: '#000', fontWeight: 600 }}>
             {driverName || t('client')}
           </div>
-          <div style={{ fontSize: '0.5rem', letterSpacing: '1px', color: '#555', marginTop: '2px' }}>
+          <div style={{ fontSize: '0.625rem', letterSpacing: '1px', color: '#555', marginTop: '2px' }}>
             {t('enRoute')}
           </div>
         </div>
@@ -206,7 +206,7 @@ export default function RideChat({ rideId, userId, driverName, onClose }) {
                 {msg.message}
               </div>
               <div style={{
-                fontSize: '0.5rem',
+                fontSize: '0.625rem',
                 color: '#444',
                 marginTop: '4px',
                 textAlign: isMe ? 'right' : 'left',

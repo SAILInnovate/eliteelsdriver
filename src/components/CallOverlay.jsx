@@ -81,7 +81,7 @@ export default function CallOverlay({
             background: peerPhoto ? `url(${peerPhoto}) center/cover` : 'rgba(255,255,255,0.08)',
             border: '1px solid rgba(255,255,255,0.14)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: '#FFF', fontSize: '2rem', fontWeight: 300, letterSpacing: '2px',
+            color: '#FFF', fontSize: '2rem', fontWeight: 400, letterSpacing: '2px',
             fontFamily: 'var(--font-display), serif'
           }}
         >

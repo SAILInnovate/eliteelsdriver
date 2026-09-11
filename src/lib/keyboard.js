@@ -34,14 +34,44 @@ const setOverlap = (next) => {
   listeners.forEach((fn) => fn());
 };
 
-// Bring the focused field into view once the keyboard has settled. `nearest`
-// keeps already-visible fields still instead of yanking the page around.
+// The nearest ancestor that can actually scroll, so we move the panel the
+// field lives in rather than the document, which never moves under `resize:
+// "none"`.
+const scrollParentOf = (el) => {
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    const { overflowY } = getComputedStyle(node);
+    if ((overflowY === 'auto' || overflowY === 'scroll') && node.scrollHeight > node.clientHeight) {
+      return node;
+    }
+  }
+  return null;
+};
+
+// Bring the focused field above the keyboard once it has settled.
+//
+// This used to be scrollIntoView({ block: 'nearest' }), which does nothing
+// here: with Keyboard.resize = "none" the webview is never shrunk, so as far
+// as the browser is concerned the strip under the keyboard is still on
+// screen and a field sitting in it needs no scrolling at all. The overlap has
+// to be subtracted by hand.
 const revealFocused = () => {
   const el = document.activeElement;
   if (!el) return;
   const editable = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable;
   if (!editable) return;
-  el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+
+  const gap = 16;                                   // breathing room above the keys
+  const usableBottom = window.innerHeight - overlap - gap;
+  const rect = el.getBoundingClientRect();
+  if (rect.bottom <= usableBottom && rect.top >= gap) return;   // already clear
+
+  const delta = rect.bottom - usableBottom;
+  const scroller = scrollParentOf(el);
+  if (scroller) {
+    scroller.scrollBy({ top: delta, behavior: 'smooth' });
+  } else {
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
 };
 
 export function initKeyboardInsets() {
@@ -70,12 +100,17 @@ export function initKeyboardInsets() {
       setOverlap(Math.round(keyboardHeight));
       document.documentElement.style.setProperty('--vv-height', `${window.innerHeight - keyboardHeight}px`);
       setOpenState();
-      setTimeout(revealFocused, 50);
+      setTimeout(revealFocused, 120);
     });
     Keyboard.addListener('keyboardWillHide', () => {
       setOverlap(0);
       document.documentElement.style.setProperty('--vv-height', `${window.innerHeight}px`);
       setClosedState();
+    });
+    // Moving from one field to the next while the keyboard is already up
+    // fires no willShow of its own, so the second field would stay buried.
+    document.addEventListener('focusin', () => {
+      if (overlap > 0) setTimeout(revealFocused, 120);
     });
     return;
   }
@@ -91,7 +126,7 @@ export function initKeyboardInsets() {
       setClosedState();
     }
     setOverlap(Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)));
-    if (overlap > 0) setTimeout(revealFocused, 50);
+    if (overlap > 0) setTimeout(revealFocused, 120);
   };
 
   document.documentElement.style.setProperty('--vv-height', `${vv.height}px`);
@@ -103,7 +138,7 @@ export function initKeyboardInsets() {
   // Focus can land on a field while the keyboard is already up (tabbing
   // between inputs), which fires no viewport resize of its own.
   document.addEventListener('focusin', () => {
-    if (overlap > 0) setTimeout(revealFocused, 50);
+    if (overlap > 0) setTimeout(revealFocused, 120);
   });
 
   sync();

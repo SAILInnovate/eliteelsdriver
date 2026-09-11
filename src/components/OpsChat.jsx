@@ -141,7 +141,7 @@ export default function OpsChat({ userId, onClose }) {
             <Headphones size={13} color="#8A7355" />
             <span style={{ fontSize: '0.6875rem', letterSpacing: '3px', color: '#000', fontWeight: 600 }}>ELS OPERATIONS</span>
           </div>
-          <div style={{ fontSize: '0.5625rem', letterSpacing: '1px', color: '#555', marginTop: '3px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}>
+          <div style={{ fontSize: '0.625rem', letterSpacing: '1px', color: '#555', marginTop: '3px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}>
             <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#4CAF50', display: 'inline-block' }} />
             DIRECT LINE TO DISPATCH
           </div>
@@ -165,7 +165,7 @@ export default function OpsChat({ userId, onClose }) {
               <Headphones size={20} color="#8A7355" />
             </div>
             <div style={{ fontSize: '0.875rem', color: '#000', fontWeight: 600, marginBottom: '6px' }}>Message ELS Operations</div>
-            <div style={{ fontSize: '0.75rem', color: '#888', lineHeight: 1.6 }}>
+            <div style={{ fontSize: '0.75rem', color: '#555', lineHeight: 1.6 }}>
               Job issues, delays, vehicle problems — dispatch reads this line and replies here. Urgent? WhatsApp the office on {OFFICE_WHATSAPP_DISPLAY}.
             </div>
           </div>
@@ -193,7 +193,7 @@ export default function OpsChat({ userId, onClose }) {
                 {msg.content}
               </div>
               <div style={{
-                fontSize: '0.5625rem', color: '#888', marginTop: '4px',
+                fontSize: '0.625rem', color: '#555', marginTop: '4px',
                 textAlign: isMe ? 'right' : 'left', letterSpacing: '0.5px'
               }}>
                 {!isMe && <span style={{ color: '#8A7355', fontWeight: 600, marginRight: '6px' }}>OPERATIONS</span>}

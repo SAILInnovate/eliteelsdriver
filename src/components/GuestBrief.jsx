@@ -75,7 +75,7 @@ function Tile({ Icon, label, value, hint, needsAsking, index }) {
       }}
     >
       <Icon size={15} color={GOLD} strokeWidth={1.4} style={{ display: 'block', marginBottom: '9px' }} />
-      <div style={{ fontSize: '0.625rem', fontWeight: 600, letterSpacing: '1.4px', textTransform: 'uppercase', color: '#8B837A', marginBottom: '8px' }}>
+      <div style={{ fontSize: '0.625rem', fontWeight: 600, letterSpacing: '1.4px', textTransform: 'uppercase', color: '#6B6B6B', marginBottom: '8px' }}>
         {label}
       </div>
 
@@ -172,7 +172,7 @@ export default function GuestBrief({
                 transition={{ duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
                 style={{ width: '5px', height: '5px', borderRadius: '50%', background: GOLD, display: 'block' }}
               />
-              <span style={{ fontSize: '0.5625rem', fontWeight: 600, letterSpacing: '1.6px', textTransform: 'uppercase', color: GOLD }}>
+              <span style={{ fontSize: '0.625rem', fontWeight: 600, letterSpacing: '1.6px', textTransform: 'uppercase', color: GOLD }}>
                 Just changed
               </span>
             </div>
@@ -209,7 +209,7 @@ export default function GuestBrief({
             transition={{ duration: 0.35, delay: 0.34, ease: [0.25, 0.46, 0.45, 0.94] }}
             style={{ marginTop: '14px', padding: '16px 16px 16px 18px', borderRadius: '14px', background: 'rgba(212,207,201,0.05)', borderLeft: `2px solid ${GOLD}` }}
           >
-            <div style={{ fontSize: '0.5625rem', fontWeight: 600, letterSpacing: '2px', textTransform: 'uppercase', color: '#8B837A', marginBottom: '8px' }}>
+            <div style={{ fontSize: '0.625rem', fontWeight: 600, letterSpacing: '2px', textTransform: 'uppercase', color: '#6B6B6B', marginBottom: '8px' }}>
               A note from the guest
             </div>
             <div style={{ fontFamily: 'var(--font-display), serif', fontSize: '1.0625rem', fontWeight: 400, color: '#F7F4F0', lineHeight: 1.5, fontStyle: 'italic' }}>

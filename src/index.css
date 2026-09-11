@@ -17,14 +17,15 @@
   /* Typography */
   --color-warm-white: #FFFFFF;
   --color-white-mid: #333333;
-  --color-warm-gray: #888888;
+  --color-warm-gray: #555555;
   
   /* Side Drawer Background */
   --color-onboarding-tan: #0A0A0A;
   
-  --color-bg: #000000;
-  --color-text: #FFFFFF;
-  --color-text-secondary: #888888;
+  /* The shipped app is a light champagne system — keep bg/text coherent */
+  --color-bg: #FFFFFF;
+  --color-text: #111111;
+  --color-text-secondary: #555555;
   
   /* Accent Color */
   --color-accent: #D4CFC9;
@@ -34,6 +35,19 @@
   --color-danger: #FF3B30;
   --color-warning: #F59E0B;
   --color-success: #4CAF50;
+
+  /* Neutral scale (light) — declared so no component ever reads an undefined var */
+  --color-white: #FFFFFF;
+  --color-gray-100: #F2F1EF;
+  --color-gray-200: #E5E2DD;
+  --color-gray-300: #CFC9C0;
+  --color-gray-400: #9E9A93;
+
+  /* Legacy accents — kept defined for backward-compat only */
+  --color-teal: #0E8C8C;
+  --color-teal-light: #E3F1F1;
+  --color-mint: #98FF98;
+  --color-btn-primary-text: #000000;
 
   /* Typography — system font first so the app feels native on device;
      Montserrat remains as the web/brand fallback */
@@ -68,13 +82,14 @@
   --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.15);
   --shadow-card: none;
 
-  /* Radius — sharp is premium */
-  --radius-sm: 0px;
-  --radius-md: 0px;
-  --radius-lg: 0px;
-  --radius-xl: 0px;
-  --radius-2xl: 0px;
-  --radius-full: 0px;
+  /* Radius — precise rounded sheets, consistent with the shipped surfaces
+     (the manifesto's "0px" predates the white/slate sheet system) */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 24px;
+  --radius-full: 999px;
 
   /* Transitions — Glide */
   --ease-glide: cubic-bezier(0.16, 1, 0.3, 1);

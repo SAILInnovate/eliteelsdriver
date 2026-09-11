@@ -395,6 +395,18 @@ export default function PlayerPortal() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [routeGeoJSON, setRouteGeoJSON] = useState(null);
   const [routeSteps, setRouteSteps] = useState([]);
+  // Road distance and drive time from the last OSRM route fetch. The ETA card
+  // used to divide a crow-flies distance by a flat 20 mph, which reads short on
+  // every city job — the route this screen already fetches for the map knows
+  // the real answer, so read it rather than guessing alongside it.
+  const [routeMetrics, setRouteMetrics] = useState(null);
+  // Google's traffic-aware answer from the ride-eta function — the same number
+  // the guest already sees on the tracking page. OSRM routes on speed limits
+  // and knows nothing about a wet Friday on Waterloo Road, so it reads short.
+  const [trafficEta, setTrafficEta] = useState(null);
+  // Where the driver was when that route was fetched, so it can be refreshed as
+  // they close on the pickup instead of the first figure standing all journey.
+  const routeAnchorRef = useRef(null);
   const [nextManeuver, setNextManeuver] = useState(null);
   const [mapHeading, setMapHeading] = useState(0);
   const [lastLocation, setLastLocation] = useState(null);
@@ -620,11 +632,35 @@ export default function PlayerPortal() {
     }
     
     if (!target) return null;
-    
+
+    // Traffic first, when the office key is configured and the answer is fresh.
+    if (trafficEta && trafficEta.target[0] === target[0] && trafficEta.target[1] === target[1]
+        && Date.now() - trafficEta.at < 5 * 60 * 1000) {
+      return {
+        mins: Math.max(1, Math.ceil(trafficEta.seconds / 60)),
+        distMiles: trafficEta.miles ?? (routeMetrics?.miles ?? getDistanceMiles(location, target)),
+        label,
+        estimated: false,
+        inTraffic: trafficEta.inTraffic,
+      };
+    }
+
+    // Road route next — OSRM has been asked for this exact leg already.
+    if (routeMetrics && routeMetrics.target[0] === target[0] && routeMetrics.target[1] === target[1]) {
+      return {
+        mins: Math.max(1, Math.ceil(routeMetrics.seconds / 60)),
+        distMiles: routeMetrics.miles,
+        label,
+        estimated: false,
+      };
+    }
+
+    // No route yet (first seconds of a job, or OSRM unreachable) — straight
+    // line over a flat 20 mph, which is only ever a placeholder.
     const distMiles = getDistanceMiles(location, target);
     const hours = distMiles / 20; // 20 mph avg city speed
     const mins = Math.ceil(hours * 60);
-    return { mins, distMiles, label };
+    return { mins, distMiles, label, estimated: true };
   };
 
   // Legacy drivers without an application row are treated as approved
@@ -697,31 +733,88 @@ export default function PlayerPortal() {
     }
 
     if (targetCoords) {
-      // Avoid refetching if target hasn't changed (simplified for MVP)
       const fetchRoute = async () => {
         try {
           const url = `https://router.project-osrm.org/route/v1/driving/${location[1]},${location[0]};${targetCoords[1]},${targetCoords[0]}?overview=full&geometries=geojson&steps=true`;
           const response = await fetch(url);
           const data = await response.json();
           if (data.routes && data.routes.length > 0) {
-            setRouteGeoJSON(data.routes[0].geometry);
-            setRouteSteps(data.routes[0].legs[0].steps);
+            const route = data.routes[0];
+            setRouteGeoJSON(route.geometry);
+            setRouteSteps(route.legs[0].steps);
+            setRouteMetrics({
+              seconds: route.duration,
+              miles: route.distance * 0.000621371,
+              target: targetCoords,
+            });
+            routeAnchorRef.current = { coords: location, at: Date.now(), target: targetCoords };
           }
         } catch (error) {
           console.error("OSRM Routing Error:", error);
         }
       };
-      
-      // Basic debounce/fetch constraint to avoid spamming OSRM
-      if (!routeGeoJSON) {
+
+      // The route used to be fetched once and then left alone, so the line on
+      // the map and the minutes on the card both described where the driver was
+      // when the job started. Refresh it when they have moved a quarter mile or
+      // when it is a minute old — often enough to count down, rare enough to
+      // stay off OSRM's back.
+      const anchor = routeAnchorRef.current;
+      const targetChanged =
+        !anchor || anchor.target[0] !== targetCoords[0] || anchor.target[1] !== targetCoords[1];
+      const moved = anchor && getDistanceMiles(anchor.coords, location) > 0.25;
+      const stale = anchor && Date.now() - anchor.at > 60000;
+      if (!routeGeoJSON || targetChanged || moved || stale) {
         fetchRoute();
       }
     } else {
       setRouteGeoJSON(null);
       setRouteSteps([]);
+      setRouteMetrics(null);
+      routeAnchorRef.current = null;
       setNextManeuver(null);
     }
   }, [activeRide?.status, activeRide?.id, location, routeGeoJSON]);
+
+  // Ask the office for the traffic-aware ETA while a job is under way. Every
+  // call is a Google Directions request billed to the project, so this runs on
+  // its own slow clock rather than off every GPS fix — arrival time does not
+  // move much in ninety seconds. A null answer (no key, stale position, no
+  // route) leaves the OSRM estimate in place rather than blanking the card.
+  useEffect(() => {
+    const live = ['dispatched', 'en_route', 'arrived', 'in_progress'];
+    if (!activeRide?.id || !live.includes(activeRide.status)) {
+      setTrafficEta(null);
+      return;
+    }
+
+    let cancelled = false;
+    const fetchTrafficEta = async () => {
+      try {
+        const { data } = await supabase.functions.invoke('ride-eta', {
+          body: { ride_id: activeRide.id },
+        });
+        if (cancelled || !data || !Number.isFinite(data.seconds)) return;
+        const target = data.heading === 'dropoff'
+          ? extractCoords(activeRide.dropoff_coords)
+          : extractCoords(activeRide.pickup_coords);
+        if (!target) return;
+        setTrafficEta({
+          seconds: data.seconds,
+          miles: Number.isFinite(data.metres) ? data.metres * 0.000621371 : null,
+          inTraffic: !!data.in_traffic,
+          target,
+          at: Date.now(),
+        });
+      } catch {
+        // Leave whatever is on the card; OSRM covers it.
+      }
+    };
+
+    fetchTrafficEta();
+    const timer = setInterval(fetchTrafficEta, 90000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [activeRide?.id, activeRide?.status]);
 
   // Calculate Map Heading and Next Maneuver
   useEffect(() => {
@@ -1783,7 +1876,9 @@ export default function PlayerPortal() {
           return (
             <div style={{ display: 'flex', gap: '16px', background: 'rgba(0,0,0,0.03)', border: '1px solid rgba(0,0,0,0.06)', borderRadius: '12px', padding: '12px 16px', marginTop: '-8px' }}>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.625rem', color: '#555', letterSpacing: '1px', textTransform: 'uppercase', marginBottom: '2px' }}>{etaData.label}</div>
+                <div style={{ fontSize: '0.625rem', color: '#555', letterSpacing: '1px', textTransform: 'uppercase', marginBottom: '2px' }}>
+                  {etaData.label}{etaData.estimated ? ' · est' : etaData.inTraffic ? ' · traffic' : ''}
+                </div>
                 <div style={{ fontSize: '1.25rem', fontWeight: 600, color: '#000', fontFamily: 'var(--font-family)' }}>
                   {etaData.mins}<span style={{ fontSize: '0.75rem', fontWeight: 400, color: '#555' }}> min</span>
                 </div>
@@ -1803,7 +1898,7 @@ export default function PlayerPortal() {
         <div>
           <div style={{ fontSize: '0.8rem', color: '#555', letterSpacing: '1px', textTransform: 'uppercase', marginBottom: '6px', fontWeight: 700 }}>Client</div>
           <h1 style={{ fontSize: '1.25rem', fontWeight: 600, color: '#000', margin: '0 0 16px 0', fontFamily: 'var(--font-family)', lineHeight: 1.4 }}>
-            {activeRide.passenger_name || activeRide.metadata?.client_name || 'Client'}
+            {activeRide.passenger_name || activeRide.client_name || activeRide.metadata?.client_name || 'Client'}
           </h1>
 
           {/* Pickup time shown to the driver 15 min ahead of the real booking
@@ -1879,7 +1974,7 @@ export default function PlayerPortal() {
 
         {/* Cabin Brief — how this guest travels */}
         <GuestBrief
-          guestName={activeRide.passenger_name || activeRide.metadata?.client_name}
+          guestName={activeRide.passenger_name || activeRide.client_name || activeRide.metadata?.client_name}
           preferences={guestPreferences}
           note={activeRide.metadata?.comment_to_driver}
           passengers={Number(activeRide.metadata?.passengers) || 0}
@@ -3061,7 +3156,7 @@ export default function PlayerPortal() {
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
                           <div style={rowStyle}>
                             <span style={labelStyle}>Client</span>
-                            <span style={valueStyle}>{trip.passenger_name || trip.metadata?.client_name || 'Client'}</span>
+                            <span style={valueStyle}>{trip.passenger_name || trip.client_name || trip.metadata?.client_name || 'Client'}</span>
                           </div>
                           <div style={{ ...rowStyle, borderBottom: auditLogs.length > 0 ? rowStyle.borderBottom : 'none' }}>
                             <span style={labelStyle}>Dropoff</span>
@@ -3113,7 +3208,7 @@ export default function PlayerPortal() {
         {call.inCall && (
           <CallOverlay
             status={call.status}
-            peerName={call.peerName || activeRide?.passenger_name || activeRide?.metadata?.client_name}
+            peerName={call.peerName || activeRide?.passenger_name || activeRide?.client_name || activeRide?.metadata?.client_name}
             subtitle={activeRide?.pickup_address?.split(',')[0]}
             muted={call.muted}
             duration={call.duration}

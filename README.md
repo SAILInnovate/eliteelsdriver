@@ -10,7 +10,10 @@ Despite the GitHub repo being named **`clinch`** (a legacy project codename), th
 **ELS Elite driver app** — the app chauffeurs use to accept jobs, navigate, and complete rides.
 
 React 19 + Vite 7 + Supabase, wrapped with Capacitor 8 for **iOS and Android**.
-App ID: `com.eliteels.driver`.
+App ID: `com.els-elite.driver` on iOS (Apple team `KL5W5JNP42`, the company account —
+the APNs auth key that serves both apps is issued under it), `com.eliteels.driver` on
+Android (hyphens are not valid in an Android `applicationId`, so the iOS id cannot be
+reused there).
 
 It is one of three repositories:
 
@@ -62,21 +65,26 @@ npx cap open android   # Build → Generate Signed Bundle
 
 ## Layout
 
+This is a single, coherent driver app — the legacy "clinch" UI (DriverApp, RideApp,
+Dashboard, tabs/drawers pages, gift-card drawer) has been removed. Shipped code only:
+
 ```
 src/
-  components/   DriverApp, RideApp, chat, tabs, drawers
-  pages/        Dashboard, Onboarding, Settings, legal pages
-  lib/          supabase client, ridePricing.js, londonZones.js
-  hooks/        location tracking, push notifications
+  pages/        PlayerPortal (main), OnboardingPage, CompleteProfilePage
+  components/   PlayerPortal helpers: JourneyControls, GuestBrief, FlightStatusCard,
+                DriverProfileDrawer, CallOverlay, RideChat, OpsChat, SafetyNet
+  lib/          supabase client, journey, rideCall, londonZones, capacitor, keyboard
+  hooks/        location / background-location / push notifications
   content/      driver NDA, client conduct text
-  i18n/         translations
+  i18n/         translations (en, de, es, fr, ar, ur)
 ```
 
-**Note:** `src/lib/ridePricing.js` is a *separate* pricing implementation from the one in
-`els-elite/src/lib/rateCard.js`. If a commercial rate changes, check whether both need updating.
+**Rate pricing** lives in the authoritative `els-elite` repo (`src/lib/rateCard.js`).
+Do not re-introduce a second pricing implementation here.
 
 ## Known issues
 
-See `HANDOVER.md` Section 9. Most urgent in this repo: gift card redemption in
-`src/components/DrawerViews.jsx:550` runs entirely client-side and lets any logged-in user set
-their own credit balance.
+See `HANDOVER.md` Section 9. The former client-side gift-card redemption in
+`src/components/DrawerViews.jsx` **has been removed** along with the rest of the legacy
+"clinch" UI, so that credit-balance self-serve vector is no longer present in this repo.
+It may still exist in the passenger app (`els-elite`) — verify there.

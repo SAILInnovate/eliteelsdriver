@@ -36,7 +36,7 @@ export class ErrorBoundary extends Component {
           <img src="/elitels.png" alt="Elite" style={{ height: '48px', marginBottom: '40px', opacity: 0.4 }} />
           
           <div style={{
-            fontSize: '0.625rem', letterSpacing: '3px', color: '#EBEBEB',
+            fontSize: '0.625rem', letterSpacing: '3px', color: '#444',
             marginBottom: '16px', fontWeight: 600
           }}>
             {t('somethingWrong')}
@@ -66,7 +66,7 @@ export class ErrorBoundary extends Component {
 
           <div style={{
             position: 'absolute', bottom: 'calc(env(safe-area-inset-bottom, 0px) + 24px)',
-            fontSize: '0.5625rem', color: '#F5F5F5', letterSpacing: '2px'
+            fontSize: '0.625rem', color: '#B0ABA3', letterSpacing: '2px'
           }}>
             ELS ELITE
           </div>
@@ -104,7 +104,7 @@ export function OfflineScreen() {
           transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
           style={{
             position: 'absolute', inset: 0, borderRadius: '50%',
-            border: '1px solid #EBEBEB'
+            border: '1px solid #D9D4CD'
           }}
         />
         <motion.div
@@ -112,14 +112,14 @@ export function OfflineScreen() {
           transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut', delay: 0.3 }}
           style={{
             position: 'absolute', inset: '8px', borderRadius: '50%',
-            border: '1px solid #EBEBEB'
+            border: '1px solid #D9D4CD'
           }}
         />
         <div style={{
           position: 'absolute', top: '50%', left: '50%',
           transform: 'translate(-50%, -50%)',
           width: '8px', height: '8px', borderRadius: '50%',
-          background: '#EBEBEB'
+          background: '#D9D4CD'
         }} />
       </div>
 
@@ -147,14 +147,14 @@ export function OfflineScreen() {
           transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
           style={{
             width: '30%', height: '100%',
-            background: 'linear-gradient(90deg, transparent, #F5F5F5, transparent)'
+            background: 'linear-gradient(90deg, transparent, #C7C2BA, transparent)'
           }}
         />
       </div>
 
       <div style={{
         position: 'absolute', bottom: 'calc(env(safe-area-inset-bottom, 0px) + 24px)',
-        fontSize: '0.5625rem', color: '#FFFFFF', letterSpacing: '2px'
+        fontSize: '0.625rem', color: '#B0ABA3', letterSpacing: '2px'
       }}>
         ELS ELITE
       </div>
