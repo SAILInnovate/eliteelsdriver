@@ -3142,7 +3142,12 @@ export default function PlayerPortal() {
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                   {tripsHistory.map((trip, i) => {
-                    const start = new Date(trip.created_at);
+                    // The pickup, not the booking. created_at is when the office
+                    // took the job; scheduled_at is when he is due, and that is
+                    // the one a chauffeur plans a day from. On ELS-209 they are
+                    // 17:16 and 16:00 — the card was naming a time more than an
+                    // hour after the car was wanted.
+                    const when = new Date(trip.scheduled_at || trip.created_at);
                     const isCompleted = trip.status === 'completed';
                     const isCancelled = trip.status === 'cancelled';
                     const statusColor = isCompleted ? '#D4CFC9' : isCancelled ? '#555' : '#4CAF50';
@@ -3160,7 +3165,7 @@ export default function PlayerPortal() {
                         {/* Status Header */}
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                           <div style={{ fontWeight: 500, fontSize: '1.0625rem', fontFamily: 'var(--font-display), serif', color: '#000' }}>
-                            {start.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} <span style={{ color: '#555' }}>·</span> {start.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                            {when.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} <span style={{ color: '#555' }}>·</span> {when.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
                           </div>
                           <div style={{ fontSize: '0.625rem', fontWeight: 600, letterSpacing: '2px', textTransform: 'uppercase', color: statusColor }}>
                             {trip.status}
@@ -3169,6 +3174,13 @@ export default function PlayerPortal() {
 
                         {/* Details */}
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
+                          {/* The pickup, which the card never showed — the one
+                              field a chauffeur needs before anything else, and
+                              the one he cannot infer from the dropoff. */}
+                          <div style={rowStyle}>
+                            <span style={labelStyle}>Pickup</span>
+                            <span style={{ ...valueStyle, textAlign: 'right', maxWidth: '60%' }}>{trip.pickup_address || '—'}</span>
+                          </div>
                           <div style={rowStyle}>
                             <span style={labelStyle}>Client</span>
                             <span style={valueStyle}>{trip.passenger_name || trip.client_name || trip.metadata?.client_name || 'Client'}</span>
