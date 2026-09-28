@@ -1509,6 +1509,55 @@ export default function PlayerPortal() {
    * here is bound to the live job, and the complaint was precisely that a job
    * already dropped off cannot be annotated.
    */
+  /**
+   * A stop that is not going to be made comes off the route.
+   *
+   * That is all it takes, and it is deliberate that nothing else is written.
+   * rides.waypoints is what the log_waypoint_changes trigger watches, so taking
+   * the stop off writes "Stop removed — <name>" into the journey log and alerts
+   * the office on its own; and metadata.stop_count is what rateCard.js reads, so
+   * the stop stops being charged for. Logging a separate "skipped" event as well
+   * would put the same change on the timeline twice.
+   *
+   * The office hears about it because the trigger treats any actor who is not
+   * ops as the client having changed the route — which is a mislabel for a
+   * chauffeur, and worth fixing, but the alert itself is right either way.
+   */
+  const skipStop = async (index, name) => {
+    const current = activeRide?.waypoints || activeRide?.metadata?.waypoints || [];
+    const next = current.filter((_, i) => i !== index);
+    const prevIndex = activeRide?.metadata?.current_stop_index || 0;
+    const newMeta = {
+      ...(activeRide.metadata || {}),
+      waypoints: next,
+      stop_count: next.length,
+      stop_names: next.map(w => w?.name).filter(Boolean),
+      // A stale index would make the next "Arrived at …" button name the wrong
+      // stop — the itinerary has to shrink with the route.
+      current_stop_index: Math.min(prevIndex, next.length),
+    };
+    try {
+      // .select() so a filtered write comes back as zero rows instead of a
+      // success. A stop the chauffeur believes he removed and the office still
+      // charges for is the whole reason this button exists.
+      const { data, error } = await supabase
+        .from('rides')
+        .update({ waypoints: next, metadata: newMeta })
+        .eq('id', activeRide.id)
+        .select('id');
+      if (error || !data?.length) {
+        console.warn('Stop not removed:', error?.message || 'no rows — not permitted');
+        return false;
+      }
+      setActiveRide(prev => ({ ...prev, waypoints: next, metadata: newMeta }));
+      triggerHaptic(ImpactStyle.Medium);
+      return true;
+    } catch (e) {
+      console.warn('Skip stop failed:', e?.message || e);
+      return false;
+    }
+  };
+
   const addTripNote = async (trip, text) => {
     const message = String(text || '').trim();
     if (!message) return false;
@@ -2019,12 +2068,23 @@ export default function PlayerPortal() {
               return (
                 <div key={index} onClick={() => openNavigation(w.name, `${w.lat},${w.lon}`)} style={{ display: 'flex', gap: '16px', alignItems: 'flex-start', cursor: 'pointer', opacity: isPast ? 0.4 : 1 }}>
                   <div style={{ width: '15px', height: '15px', borderRadius: '50%', background: isPast ? '#555' : '#D4CFC9', border: isPast ? '3px solid #EBEBEB' : '3px solid #888', zIndex: 1, marginTop: '2px' }} />
-                  <div>
+                  <div style={{ flex: 1 }}>
                     <div style={{ fontSize: '0.65rem', color: '#666', letterSpacing: '1px', textTransform: 'uppercase', marginBottom: '4px' }}>Stop {index + 1}</div>
                     <div style={{ fontSize: '1.0625rem', color: '#000', fontWeight: 500, lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: '6px' }}>
                       {w.name} <ExternalLink size={13} color="#666" />
                     </div>
                   </div>
+                  {/* Only a stop still to come can be dropped. One he has already
+                      made is on the record and comes off through the office. */}
+                  {!isPast && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); triggerHaptic(); skipStop(index, w.name); }}
+                      title="Take this stop off the route"
+                      style={{ flexShrink: 0, background: 'transparent', border: '1px solid rgba(0,0,0,0.15)', borderRadius: '8px', padding: '7px 11px', fontSize: '0.625rem', fontWeight: 700, letterSpacing: '1px', textTransform: 'uppercase', color: '#777', cursor: 'pointer' }}
+                    >
+                      Not doing
+                    </button>
+                  )}
                 </div>
               );
             })}
