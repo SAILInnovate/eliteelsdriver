@@ -468,6 +468,12 @@ export default function PlayerPortal() {
   const [customLogText, setCustomLogText] = useState('');
   const [showTrips, setShowTrips] = useState(false);
   const [tripsHistory, setTripsHistory] = useState([]);
+  // Which My Trips card is open, and the note being typed on it. A finished job
+  // used to be a dead card: visible, and impossible to do anything with, so a
+  // charge or a note remembered after the drop-off was simply lost.
+  const [openTrip, setOpenTrip] = useState(null);
+  const [tripNote, setTripNote] = useState('');
+  const [tripNoteSaving, setTripNoteSaving] = useState(false);
   const [unreadMessages, setUnreadMessages] = useState(0);
   const [unreadOps, setUnreadOps] = useState(0);
   const [systemNotification, setSystemNotification] = useState(null);
@@ -1491,6 +1497,54 @@ export default function PlayerPortal() {
       console.warn('Failed to add expense:', e?.message || e);
     } finally {
       setExpenseSaving(false);
+    }
+  };
+
+  /**
+   * A note on any trip, finished or not.
+   *
+   * Appended to the same audit_logs array the card already lists, so it appears
+   * where the chauffeur is looking rather than somewhere he has to go and find.
+   * Deliberately takes a ride rather than reading activeRide: everything else
+   * here is bound to the live job, and the complaint was precisely that a job
+   * already dropped off cannot be annotated.
+   */
+  const addTripNote = async (trip, text) => {
+    const message = String(text || '').trim();
+    if (!message) return false;
+    setTripNoteSaving(true);
+    const currentMeta = trip.metadata || {};
+    const newMeta = {
+      ...currentMeta,
+      audit_logs: [
+        ...(currentMeta.audit_logs || []),
+        {
+          timestamp: new Date().toISOString(),
+          message,
+          driver_id: user?.id || null,
+          logged_by: 'chauffeur',
+        },
+      ],
+    };
+    try {
+      // .select() so a write the policy filters comes back as zero rows instead
+      // of a success. Every silent failure in this project has been one of
+      // these, and this one would be a chauffeur's note about a missed stop
+      // disappearing between his phone and the office.
+      const { data, error } = await supabase
+        .from('rides').update({ metadata: newMeta }).eq('id', trip.id).select('id');
+      if (error || !data?.length) {
+        console.warn('Trip note not saved:', error?.message || 'no rows — not permitted');
+        return false;
+      }
+      setTripsHistory(prev => prev.map(t => (t.id === trip.id ? { ...t, metadata: newMeta } : t)));
+      triggerHaptic(ImpactStyle.Light);
+      return true;
+    } catch (e) {
+      console.warn('Trip note failed:', e?.message || e);
+      return false;
+    } finally {
+      setTripNoteSaving(false);
     }
   };
 
@@ -3152,6 +3206,8 @@ export default function PlayerPortal() {
                     const isCancelled = trip.status === 'cancelled';
                     const statusColor = isCompleted ? '#D4CFC9' : isCancelled ? '#555' : '#4CAF50';
                     const auditLogs = trip.metadata?.audit_logs || [];
+                    const stopsLine = (Array.isArray(trip.waypoints) ? trip.waypoints : [])
+                      .map(w => w?.name).filter(Boolean).join(' · ') || '—';
                     const rowStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '8px 0', borderBottom: '1px solid rgba(0,0,0,0.05)' };
                     const labelStyle = { fontSize: '0.6875rem', color: '#555', letterSpacing: '1px', textTransform: 'uppercase' };
                     const valueStyle = { fontSize: '0.8125rem', color: '#000', fontWeight: 500, fontVariantNumeric: 'tabular-nums' };
@@ -3162,10 +3218,16 @@ export default function PlayerPortal() {
                         initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}
                         style={{ background: 'rgba(0,0,0,0.03)', border: '1px solid rgba(0,0,0,0.06)', borderRadius: '12px', padding: '18px 20px' }}
                       >
-                        {/* Status Header */}
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                        {/* Status Header — the tap target. On the header rather
+                            than the whole card, so a tap inside the note box
+                            cannot close the panel again. */}
+                        <div
+                          onClick={() => { triggerHaptic(); setOpenTrip(openTrip === trip.id ? null : trip.id); setTripNote(''); }}
+                          style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', cursor: 'pointer' }}
+                        >
                           <div style={{ fontWeight: 500, fontSize: '1.0625rem', fontFamily: 'var(--font-display), serif', color: '#000' }}>
                             {when.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} <span style={{ color: '#555' }}>·</span> {when.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                            <span style={{ color: '#8A6A2F', fontSize: '0.8125rem', marginLeft: '8px' }}>{openTrip === trip.id ? '▴' : '▾'}</span>
                           </div>
                           <div style={{ fontSize: '0.625rem', fontWeight: 600, letterSpacing: '2px', textTransform: 'uppercase', color: statusColor }}>
                             {trip.status}
@@ -3190,6 +3252,48 @@ export default function PlayerPortal() {
                             <span style={{ ...valueStyle, textAlign: 'right', maxWidth: '60%' }}>{trip.dropoff_address || 'As Directed'}</span>
                           </div>
                         </div>
+
+                        {/* Full details, and somewhere to annotate a job that has
+                            already finished. Everything a chauffeur records —
+                            expenses, off-plan, the journey steps — hangs off
+                            activeRide, so once a job left the active screen
+                            there was no way back into it. */}
+                        {openTrip === trip.id && (
+                          <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid rgba(0,0,0,0.08)' }}>
+                            {[
+                              ['Due', when.toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })],
+                              ['Booking', trip.booking_reference || '—'],
+                              ['Flight', trip.metadata?.flight_number || trip.flight_number || '—'],
+                              ['Passengers', trip.metadata?.passengers ?? '—'],
+                              ['Suitcases', trip.metadata?.suitcases ?? '—'],
+                              ['Stops', stopsLine],
+                              ['Note to chauffeur', trip.metadata?.comment_to_driver || '—'],
+                            ].map(([label, value]) => (
+                              <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', padding: '5px 0' }}>
+                                <span style={labelStyle}>{label}</span>
+                                <span style={{ ...valueStyle, textAlign: 'right', maxWidth: '62%' }}>{String(value)}</span>
+                              </div>
+                            ))}
+
+                            <textarea
+                              value={tripNote}
+                              onChange={(e) => setTripNote(e.target.value)}
+                              placeholder="Add a note — a charge, a delay, a missed stop, anything the office should know"
+                              rows={3}
+                              style={{ width: '100%', marginTop: '12px', padding: '10px 12px', borderRadius: '8px', border: '1px solid rgba(0,0,0,0.15)', fontSize: '0.8125rem', fontFamily: 'inherit', boxSizing: 'border-box', resize: 'vertical' }}
+                            />
+                            <button
+                              onClick={async () => {
+                                triggerHaptic();
+                                if (await addTripNote(trip, tripNote)) setTripNote('');
+                              }}
+                              disabled={tripNoteSaving || !tripNote.trim()}
+                              style={{ marginTop: '8px', width: '100%', padding: '12px', border: 'none', borderRadius: '8px', background: tripNote.trim() ? '#000' : 'rgba(0,0,0,0.08)', color: tripNote.trim() ? '#FFF' : '#888', fontWeight: 600, fontSize: '0.75rem', letterSpacing: '1.5px', textTransform: 'uppercase', cursor: tripNote.trim() ? 'pointer' : 'default' }}
+                            >
+                              {tripNoteSaving ? 'Saving…' : 'Save note'}
+                            </button>
+                          </div>
+                        )}
 
                         {/* Audit Logs */}
                         {auditLogs.length > 0 && (
