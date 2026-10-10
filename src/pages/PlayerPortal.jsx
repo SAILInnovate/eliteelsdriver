@@ -40,6 +40,11 @@ const STALE_AFTER_MS = 6 * 60 * 60 * 1000;
 // Past this, an open shift is a missed clock-off rather than a long day. The
 // same figure the office uses to decide what is fit to put on a wage run.
 const STALE_SHIFT_HOURS = 16;
+// A job is the chauffeur's to see once the office has confirmed it. Before that
+// the office is still deciding who does it and the job can still move.
+const CONFIRMED_STATUSES = ['dispatched', 'en_route', 'arrived', 'in_progress'];
+const UNCONFIRMED_STATUSES = ['pending', 'scheduled', 'no_drivers'];
+
 const isStaleJob = (job) =>
   job.status === 'dispatched'
   && !!job.scheduled_at
@@ -509,13 +514,18 @@ export default function PlayerPortal() {
    * o'clock saw nothing at all. The list is the source of truth; the active
    * card is derived from it.
    *
-   * The filter is every live status rather than 'dispatched' onwards, because
-   * driver_id is the assignment and status is only how far along the job is.
-   * The office has two ways of assigning a chauffeur: the booking drawer sets
-   * driver_id and status together, but the dispatch board's driver dropdown
-   * sets driver_id alone and leaves the job 'pending' until someone confirms
-   * it — and the database pushes "New Job Assigned" off that same column. A
-   * driver was being woken for a job that then appeared nowhere in the app.
+   * Only a CONFIRMED job is the chauffeur's to see: 'dispatched' onwards.
+   * The office puts a chauffeur on a job while it is still 'pending' (the
+   * board's "Booked") and is still working out who should do it; the job can
+   * move twice more before it settles. "Once the driver is confirmed and we
+   * send a message, that's when he starts to see that in his app" — so an
+   * assigned-but-unconfirmed job appears nowhere here, and is not announced.
+   *
+   * This used to list 'pending' jobs too, because the database pushed "New Job
+   * Assigned" off driver_id alone and a job that woke the driver but showed
+   * nowhere was worse. The database now sends that push at confirmation
+   * (20261010000000_a_chauffeur_hears_once_the_job_is_confirmed.sql), so the
+   * list and the push agree. Apply that migration BEFORE releasing this.
    */
   const loadAssignedJobs = useCallback(async () => {
     if (!user?.id) return;
@@ -523,7 +533,7 @@ export default function PlayerPortal() {
       .from('rides')
       .select('*')
       .eq('driver_id', user.id)
-      .in('status', ['pending', 'scheduled', 'dispatched', 'en_route', 'arrived', 'in_progress'])
+      .in('status', CONFIRMED_STATUSES)
       .order('scheduled_at', { ascending: true, nullsFirst: false })
       .limit(50);
 
@@ -532,8 +542,6 @@ export default function PlayerPortal() {
     // The job in hand is the one under way; failing that, the next confirmed
     // job that has not already gone stale — otherwise a job left open from
     // last Tuesday sorts first and greets the driver instead of this morning's.
-    // A 'pending' job is assigned but not yet confirmed by the office, so it
-    // waits in Coming Up rather than arriving with the journey controls on it.
     const inHand =
       jobs.find(j => ['en_route', 'arrived', 'in_progress'].includes(j.status)) ||
       jobs.find(j => j.status === 'dispatched' && !isStaleJob(j)) ||
@@ -931,6 +939,17 @@ export default function PlayerPortal() {
 
         const ride = payload.new;
         if (!ride || ride.driver_id !== user?.id) return;
+
+        // Assigned but not yet confirmed: the office is still working it out.
+        // No buzz, and nothing remembered about it — so that when it IS
+        // confirmed it is a job this app has never seen, and announces itself
+        // then. Re-listing also takes a job off the screen if the office
+        // un-confirms it.
+        if (UNCONFIRMED_STATUSES.includes(ride.status)) {
+          delete seenRidesRef.current[ride.id];
+          loadAssignedJobs();
+          return;
+        }
 
         // Whether this is a NEW job is judged against what this app last knew,
         // not against payload.old. Realtime only fills payload.old when the
@@ -2653,7 +2672,8 @@ export default function PlayerPortal() {
                   triggerHaptic();
                   setHistoryLoading(true);
                   setShowTrips(true);
-                  const { data } = await supabase.from('rides').select('*').eq('driver_id', user.id).order('created_at', { ascending: false }).limit(50);
+                  // Not the jobs still being arranged: those are not the chauffeur's yet.
+                  const { data } = await supabase.from('rides').select('*').eq('driver_id', user.id).not('status', 'in', `(${UNCONFIRMED_STATUSES.join(',')})`).order('created_at', { ascending: false }).limit(50);
                   setTripsHistory(data || []);
                   setHistoryLoading(false);
                 }}
