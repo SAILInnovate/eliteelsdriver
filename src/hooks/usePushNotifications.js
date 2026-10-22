@@ -27,6 +27,22 @@ export default function usePushNotifications({ onReceived, onOpened } = {}) {
     if (!session?.user?.id || Capacitor.getPlatform() === 'web') return;
 
     const registerPush = async () => {
+      // Android 8+ routes every notification through a channel, and send-push
+      // targets it by id ("els"). A notification naming a channel that was
+      // never created is dropped silently — no error, nothing on screen — so
+      // the channel has to exist before we register.
+      if (Capacitor.getPlatform() === 'android') {
+        try {
+          await PushNotifications.createChannel({
+            id: 'els',
+            name: 'ELS Driver',
+            description: 'Journey updates and alerts',
+            importance: 5,
+            visibility: 1,
+          });
+        } catch { /* channel already exists */ }
+      }
+
       let permStatus = await PushNotifications.checkPermissions();
 
       if (permStatus.receive === 'prompt') {

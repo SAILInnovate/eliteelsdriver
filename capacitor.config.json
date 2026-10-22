@@ -5,6 +5,9 @@
     "server": {
         "androidScheme": "https"
     },
+    "android": {
+        "useLegacyBridge": true
+    },
     "ios": {
         "allowsLinkPreview": false,
         "scrollEnabled": false,

@@ -73,6 +73,20 @@
   }
 
   .serif { font-family: 'Cormorant Garamond', Georgia, serif; }
+
+  /* ---- Google Play phone screenshots ----------------------------------
+     Play will not take the 19.5:9 App Store frames: it caps a screenshot at
+     9:16, and 1242x2688 is taller than that. Play renders at 1080x1920, a
+     squatter frame, so the device no longer fits at 74vw and the type set
+     for a tall frame overruns the width. This block only ever applies at
+     1/2 and wider, so the App Store exports above are untouched. */
+  @media (min-aspect-ratio: 1/2) {
+    .stack { padding-top: 7vh; }
+    .headline { font-size: 3.4vh; }
+    .device { width: 58vw; margin-top: 4vh; border-radius: 4.5vw; }
+    .bleed .caption { font-size: 2.8vh; bottom: 8vh; }
+    .mark { height: 6.5vh; }
+  }
 </style>
 </head>
 <body>

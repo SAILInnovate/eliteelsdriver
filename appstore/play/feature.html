@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ELS Elite Driver — Play feature graphic</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* Exactly 1024x500 — Chrome is launched at that size, so 100vw/100vh is the
+     export. Play crops nothing, but it lays a play button over the middle of
+     this graphic when a promo video is attached, so the type sits left and the
+     centre is kept clear.
+
+     Nothing here may use transform, z-index or opacity on an ancestor of the
+     mark: each of those opens a stacking context, and the mark's screen blend
+     would then have nothing but its own group to blend against — which is how
+     it ends up in a black box. Paint order is DOM order instead. */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0A0A0A; }
+  body { font-family: 'Montserrat', -apple-system, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+
+  .g { position: absolute; inset: 0; overflow: hidden; }
+  /* The source photograph is square; this pulls a horizontal band across the
+     chauffeur rather than letterboxing him. */
+  .g img.bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center 34%; }
+  /* Darkens the left where the type sits and leaves the car lit on the right. */
+  .scrim {
+    position: absolute; inset: 0;
+    background:
+      linear-gradient(to right, rgba(0,0,0,0.88) 0%, rgba(0,0,0,0.72) 34%, rgba(0,0,0,0.20) 62%, rgba(0,0,0,0.05) 100%),
+      linear-gradient(to bottom, rgba(0,0,0,0.30) 0%, rgba(0,0,0,0) 45%);
+  }
+  .copy {
+    position: absolute; left: 6.2%; top: 0; bottom: 0; width: 52%;
+    display: flex; flex-direction: column; justify-content: center; align-items: flex-start;
+    color: #FFF;
+  }
+  /* The mark artwork is a white knockout on an opaque black ground, so it is
+     screened onto the photograph rather than laid over it. */
+  .copy img.mark { height: 84px; width: auto; display: block; margin-bottom: 22px; mix-blend-mode: screen; }
+  .copy .line { font-size: 30px; line-height: 1.24; font-weight: 500; letter-spacing: 0.005em; }
+  .copy .line .thin { display: block; font-weight: 300; color: #C9C4BE; }
+  .copy .rule { width: 54px; height: 2px; background: rgba(255,255,255,0.55); margin: 22px 0 18px; }
+  .copy .foot {
+    font-size: 14px; font-weight: 400; letter-spacing: 0.14em; text-transform: uppercase;
+    color: rgba(255,255,255,0.72);
+  }
+</style>
+</head>
+<body>
+  <div class="g">
+    <img class="bg" src="../img/opener.png" alt="">
+    <div class="scrim"></div>
+    <div class="copy">
+      <img class="mark" src="../mark-white.png" alt="">
+      <div class="line">The working app<span class="thin">for ELS Elite chauffeurs</span></div>
+      <div class="rule"></div>
+      <div class="foot">Invitation only</div>
+    </div>
+  </div>
+</body>
+</html>

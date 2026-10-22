@@ -46,8 +46,6 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>ELS Driver uses your camera to record vehicle condition before and after each shift.</string>
-	<key>NSContactsUsageDescription</key>
-	<string>ELS Elite can access your contacts to quickly book rides for friends and family.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>ELS Elite uses Face ID to securely authorise payments.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>

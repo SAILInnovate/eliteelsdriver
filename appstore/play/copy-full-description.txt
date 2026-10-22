@@ -1,0 +1,29 @@
+ELS Elite Driver is the working app for chauffeurs on the ELS Elite roster. It is issued to vetted drivers by ELS ELITE LTD and is not open to the public: you cannot create an account or take work through it unless our operations team has put you on the roster.
+
+Everything a chauffeur does across a shift happens here. Clocking on, the vehicle check, the job itself, and the paperwork at the end of it.
+
+Start and end of shift
+Record the registration of the car you are in, film a walk-around of its condition, flag fuel or a fault, and go online. Ending a shift takes a second walk-around and any closing notes, so the car is documented at both ends of the day.
+
+The job
+Dispatch comes straight to your phone. Each job carries the pickup, the drop-off, the timings and the guest brief: how the guest likes the door handled, the cabin temperature, the music, and whether conversation is welcome. Airport pickups show live flight status, so you know before you set off whether the aircraft is early or held.
+
+On the road
+The route is drawn on the map with the next manoeuvre in front of you. Move the job through its stages with a tap each: On Location, Passenger On Board, Complete. The office and the guest see each stage as it happens, so nobody has to ring to ask where you are.
+
+Talking to the office
+Message Operations from inside the app, or the guest directly, without either of you handing over a personal number.
+
+Hours and expenses
+Every shift is logged with clock-in, clock-out and duration, and you can correct your own hours with a note if something was recorded wrong. Add parking, tolls, the congestion charge, ULEZ, waiting time or cleaning to a job as you incur it, and it reaches the office with the booking rather than as a receipt in a glovebox.
+
+Documents
+Keep your DVLA driving licence, PCO or private hire licence, DVLA check code, proof of identity and profile photograph on file, and see at a glance what is still outstanding.
+
+Location
+While you are on shift, ELS Elite Driver shares your location so that Operations can dispatch to you and your guest can follow the car on a live tracking link. It runs as a foreground service with a permanent notification for as long as you are online, so the guest does not lose sight of the car when the app is off screen. Nothing is collected once you end your shift.
+
+Languages
+English, French, German, Spanish and Arabic.
+
+ELS Elite Driver requires an ELS Elite chauffeur account. To join the roster, contact ELS ELITE LTD.
