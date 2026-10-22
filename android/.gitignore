@@ -104,4 +104,4 @@ app/src/main/res/xml/config.xml
 # Firebase project config for the Android build. Contains a project API key and
 # lives in each developer's own checkout (from the Firebase console) rather than
 # in a public repository. Keep a copy wherever the release build is run.
-android/app/google-services.json
+app/google-services.json
