@@ -13,7 +13,8 @@ import { Keyboard } from '@capacitor/keyboard';
  * Because the webview is never resized, visualViewport stays at full height on
  * native and cannot see the overlap at all — there, the Capacitor Keyboard
  * plugin's keyboardWillShow/Hide events are the only source of the height.
- * visualViewport remains the fallback for the plain web build.
+ * visualViewport remains the fallback for the plain web build and for
+ * Android, where the OS resizes the webview and there is no overlap to add.
  *
  * This module is the single source of truth for that overlap:
  *   - exposes it as the `--kb` CSS variable for layout/CSS use
@@ -92,7 +93,14 @@ export function initKeyboardInsets() {
     document.documentElement.style.setProperty('--chat-pb', '12px');
   };
 
-  if (Capacitor.isNativePlatform()) {
+  // Android is the opposite of iOS: Keyboard.resize is an iOS-only setting
+  // there, and the OS shrinks the webview itself (adjustResize, plus
+  // interactive-widget=resizes-content in index.html). window.innerHeight
+  // and visualViewport are already the visible area, so subtracting the
+  // plugin's keyboardHeight again would lift every screen by a second
+  // keyboard's worth. Android takes the visualViewport path below, where the
+  // overlap comes out as 0 and --vv-height is the already-shrunk height.
+  if (Capacitor.getPlatform() === 'ios') {
     document.documentElement.style.setProperty('--vv-height', `${window.innerHeight}px`);
     // `willShow` fires as the keyboard starts animating in, so the composer
     // travels with it rather than snapping up once it has landed.
