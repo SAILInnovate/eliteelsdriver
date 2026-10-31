@@ -40,10 +40,14 @@ const STALE_AFTER_MS = 6 * 60 * 60 * 1000;
 // Past this, an open shift is a missed clock-off rather than a long day. The
 // same figure the office uses to decide what is fit to put on a wage run.
 const STALE_SHIFT_HOURS = 16;
-// A job is the chauffeur's to see once the office has confirmed it. Before that
-// the office is still deciding who does it and the job can still move.
+// A job the office has put a chauffeur on is "Booked" until the chauffeur
+// confirms it; confirming moves it to 'dispatched', which the office's board
+// labels Confirmed. Booked jobs are listed so they can be confirmed, but are
+// never the job in hand.
 const CONFIRMED_STATUSES = ['dispatched', 'en_route', 'arrived', 'in_progress'];
-const UNCONFIRMED_STATUSES = ['pending', 'scheduled', 'no_drivers'];
+const BOOKED_STATUSES = ['pending', 'scheduled'];
+const LISTED_STATUSES = [...BOOKED_STATUSES, ...CONFIRMED_STATUSES];
+const UNCONFIRMED_STATUSES = [...BOOKED_STATUSES, 'no_drivers'];
 
 const isStaleJob = (job) =>
   job.status === 'dispatched'
@@ -327,6 +331,8 @@ export default function PlayerPortal() {
   // ride id → the last status this app saw, so a new assignment can be told
   // apart from the office editing a job we already hold
   const seenRidesRef = useRef({});
+  // The booked job whose confirmation is in flight, so a double tap sends one
+  const [confirmingId, setConfirmingId] = useState(null);
   // Everything assigned to this driver, soonest first — the job in hand is
   // taken out of it and shown as the active card.
   const [upcomingJobs, setUpcomingJobs] = useState([]);
@@ -514,18 +520,11 @@ export default function PlayerPortal() {
    * o'clock saw nothing at all. The list is the source of truth; the active
    * card is derived from it.
    *
-   * Only a CONFIRMED job is the chauffeur's to see: 'dispatched' onwards.
-   * The office puts a chauffeur on a job while it is still 'pending' (the
-   * board's "Booked") and is still working out who should do it; the job can
-   * move twice more before it settles. "Once the driver is confirmed and we
-   * send a message, that's when he starts to see that in his app" — so an
-   * assigned-but-unconfirmed job appears nowhere here, and is not announced.
-   *
-   * This used to list 'pending' jobs too, because the database pushed "New Job
-   * Assigned" off driver_id alone and a job that woke the driver but showed
-   * nowhere was worse. The database now sends that push at confirmation
-   * (20261010000000_a_chauffeur_hears_once_the_job_is_confirmed.sql), so the
-   * list and the push agree. Apply that migration BEFORE releasing this.
+   * A job the office has put this chauffeur on while it is still 'pending'
+   * (the board's "Booked") is listed so the chauffeur can confirm it — see
+   * confirmJob. It is never the job in hand: that is a confirmed job only.
+   * Booking a chauffeur does not buzz the phone; the database pushes "New Job
+   * Assigned" at confirmation (20261010000000_a_chauffeur_hears_once_the_job_is_confirmed.sql).
    */
   const loadAssignedJobs = useCallback(async () => {
     if (!user?.id) return;
@@ -533,7 +532,7 @@ export default function PlayerPortal() {
       .from('rides')
       .select('*')
       .eq('driver_id', user.id)
-      .in('status', CONFIRMED_STATUSES)
+      .in('status', LISTED_STATUSES)
       .order('scheduled_at', { ascending: true, nullsFirst: false })
       .limit(50);
 
@@ -557,6 +556,37 @@ export default function PlayerPortal() {
     setStaleJobs(rest.filter(isStaleJob));
     setUpcomingJobs(rest.filter(j => !isStaleJob(j)));
   }, [user?.id]);
+
+  /**
+   * The chauffeur confirms a job they have been booked on: 'pending' or
+   * 'scheduled' becomes 'dispatched', the board's Confirmed.
+   *
+   * The update is conditioned on the job still being booked and still theirs,
+   * so a job the office has moved or reassigned in the meantime is not
+   * overwritten; in that case nothing changes and the list is simply refreshed.
+   * The realtime handler would treat the new 'dispatched' as a job this app is
+   * seeing for the first time and buzz at the chauffeur for their own tap, so
+   * the status is recorded as seen first.
+   */
+  const confirmJob = async (job) => {
+    if (!user?.id || confirmingId) return;
+    setConfirmingId(job.id);
+    const priorSeen = seenRidesRef.current[job.id];
+    seenRidesRef.current[job.id] = 'dispatched';
+    const { data, error } = await supabase
+      .from('rides')
+      .update({ status: 'dispatched' })
+      .eq('id', job.id)
+      .eq('driver_id', user.id)
+      .in('status', BOOKED_STATUSES)
+      .select('id');
+    if (error || !data?.length) {
+      seenRidesRef.current[job.id] = priorSeen;
+      if (error) console.warn('Job confirmation failed:', error);
+    }
+    await loadAssignedJobs();
+    setConfirmingId(null);
+  };
 
   const refreshUnreadCounts = useCallback(async () => {
     if (!user?.id) return { ride: 0, ops: 0 };
@@ -940,13 +970,12 @@ export default function PlayerPortal() {
         const ride = payload.new;
         if (!ride || ride.driver_id !== user?.id) return;
 
-        // Assigned but not yet confirmed: the office is still working it out.
-        // No buzz, and nothing remembered about it — so that when it IS
-        // confirmed it is a job this app has never seen, and announces itself
-        // then. Re-listing also takes a job off the screen if the office
-        // un-confirms it.
+        // Booked but not yet confirmed: listed for the chauffeur to confirm,
+        // with no buzz. loadAssignedJobs records it as seen as 'pending', so
+        // the office confirming it later is a status change and announces
+        // itself then. Re-listing also puts a job back among the booked if
+        // the office un-confirms it.
         if (UNCONFIRMED_STATUSES.includes(ride.status)) {
-          delete seenRidesRef.current[ride.id];
           loadAssignedJobs();
           return;
         }
@@ -1742,9 +1771,9 @@ export default function PlayerPortal() {
    * who) and nothing that invites acting on a job that is not the one in hand.
    */
   const renderJobCard = (job, { stale = false } = {}) => {
-    // Assigned but not yet confirmed by the office. Worth saying: the driver
-    // should not build the day around a job that may still move.
-    const unconfirmed = ['pending', 'scheduled'].includes(job.status);
+    // Booked on this chauffeur but not yet confirmed by them.
+    const unconfirmed = BOOKED_STATUSES.includes(job.status);
+    const confirming = confirmingId === job.id;
 
     return (
       <div
@@ -1789,10 +1818,27 @@ export default function PlayerPortal() {
             )}
             {unconfirmed && (
               <span style={{ fontSize: '0.625rem', color: '#8A7355', letterSpacing: '1px', textTransform: 'uppercase', fontWeight: 700 }}>
-                Awaiting confirmation
+                Booked
               </span>
             )}
           </div>
+        )}
+
+        {unconfirmed && !stale && (
+          <button
+            onClick={() => confirmJob(job)}
+            disabled={!!confirmingId}
+            style={{
+              marginTop: '12px', width: '100%', padding: '12px 0',
+              border: 'none', borderRadius: '10px',
+              background: '#000', color: '#FFF',
+              fontSize: '0.6875rem', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase',
+              opacity: confirmingId && !confirming ? 0.4 : 1,
+              cursor: confirmingId ? 'default' : 'pointer'
+            }}
+          >
+            {confirming ? 'Confirming…' : 'Confirm Job'}
+          </button>
         )}
       </div>
     );
