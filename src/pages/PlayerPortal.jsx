@@ -24,10 +24,11 @@ import FlightStatusCard from '../components/FlightStatusCard';
 import GuestBrief from '../components/GuestBrief';
 import RideChat from '../components/RideChat';
 import CallOverlay from '../components/CallOverlay';
-import JourneyControls from '../components/JourneyControls';
-import { readJourney, forwardAction, backAction, stepOutAction, applyAction, describeEvent } from '../lib/journey';
+import JourneyControls, { StageBand } from '../components/JourneyControls';
+import { readJourney, forwardAction, backAction, stepOutAction, stopChoices, journeyStage, hasClears, applyAction, describeEvent } from '../lib/journey';
 import { useRideCall } from '../lib/rideCall';
 import OpsChat from '../components/OpsChat';
+import ShiftLog from '../components/ShiftLog';
 import { CONDUCT_VERSION, CONDUCT_TITLE, CONDUCT_INTRO, CONDUCT_BODY } from '../content/clientConduct';
 
 // A confirmed job whose pickup was hours ago and that was never started is not
@@ -45,6 +46,8 @@ const STALE_SHIFT_HOURS = 16;
 // labels Confirmed. Booked jobs are listed so they can be confirmed, but are
 // never the job in hand.
 const CONFIRMED_STATUSES = ['dispatched', 'en_route', 'arrived', 'in_progress'];
+// Started: the car is on its way or the passenger is aboard. Only these hold the shift open.
+const JOB_UNDER_WAY = ['en_route', 'arrived', 'in_progress'];
 const BOOKED_STATUSES = ['pending', 'scheduled'];
 const LISTED_STATUSES = [...BOOKED_STATUSES, ...CONFIRMED_STATUSES];
 const UNCONFIRMED_STATUSES = [...BOOKED_STATUSES, 'no_drivers'];
@@ -483,6 +486,19 @@ export default function PlayerPortal() {
   // used to be a dead card: visible, and impossible to do anything with, so a
   // charge or a note remembered after the drop-off was simply lost.
   const [openTrip, setOpenTrip] = useState(null);
+  // The opened trip's journey steps, by ride id: read once, the first time it opens.
+  const [tripSteps, setTripSteps] = useState({});
+  useEffect(() => {
+    if (!openTrip || tripSteps[openTrip]) return;
+    let cancelled = false;
+    supabase.from('ride_events')
+      .select('id, event_type, to_state, direction, stop_name, wait_mins, note, occurred_at')
+      .eq('ride_id', openTrip)
+      .order('occurred_at', { ascending: true })
+      .limit(100)
+      .then(({ data }) => { if (!cancelled && data) setTripSteps(prev => ({ ...prev, [openTrip]: data })); });
+    return () => { cancelled = true; };
+  }, [openTrip, tripSteps]);
   const [tripNote, setTripNote] = useState('');
   const [tripNoteSaving, setTripNoteSaving] = useState(false);
   const [unreadMessages, setUnreadMessages] = useState(0);
@@ -542,7 +558,7 @@ export default function PlayerPortal() {
     // job that has not already gone stale — otherwise a job left open from
     // last Tuesday sorts first and greets the driver instead of this morning's.
     const inHand =
-      jobs.find(j => ['en_route', 'arrived', 'in_progress'].includes(j.status)) ||
+      jobs.find(j => JOB_UNDER_WAY.includes(j.status)) ||
       jobs.find(j => j.status === 'dispatched' && !isStaleJob(j)) ||
       null;
 
@@ -1280,6 +1296,60 @@ export default function PlayerPortal() {
     }
   };
 
+  // The car check at Start Journey. The office allocates a car to the job;
+  // the driver may be in another one (the allocated car went for a wash). Asked
+  // once, before setting off, so the job and the shift agree on the car.
+  const [carCheck, setCarCheck] = useState(null); // { jobReg, shiftReg }
+  const [journeyRearm, setJourneyRearm] = useState(0);
+  const jobCarReg = (ride) =>
+    (ride?.metadata?.assigned_reg || ride?.metadata?.own_car_plate || ride?.vehicle_reg || '').trim().toUpperCase();
+  const sameReg = (a, b) => (a || '').replace(/\s+/g, '').toUpperCase() === (b || '').replace(/\s+/g, '').toUpperCase();
+
+  const onJourneyAction = (key) => {
+    if (key === 'start') {
+      const jobReg = jobCarReg(activeRide);
+      const shiftReg = (shiftData.carReg || '').trim().toUpperCase();
+      if (jobReg && !sameReg(jobReg, shiftReg)) {
+        setCarCheck({ jobReg, shiftReg });
+        return;
+      }
+    }
+    runJourneyAction(key);
+  };
+
+  const resolveCarCheck = async (choice) => {
+    const check = carCheck;
+    setCarCheck(null);
+    if (!check || choice === 'cancel') { setJourneyRearm(n => n + 1); return; }
+    if (choice === 'job_car' && currentShiftId) {
+      // In the job's car after all: the shift moves onto it, and the log says so.
+      const { error } = await supabase.from('driver_shifts').update({ car_reg: check.jobReg }).eq('id', currentShiftId);
+      if (!error) {
+        setShiftData(prev => ({ ...prev, carReg: check.jobReg }));
+        const coords = hasFix && location ? { lat: location[0], lng: location[1] } : null;
+        await supabase.from('driver_shift_log').insert({
+          id: crypto.randomUUID(), shift_id: currentShiftId, driver_id: user.id, kind: 'car_change',
+          car_reg: check.jobReg, previous_car_reg: check.shiftReg || null, reason: 'office_swap',
+          note: 'The car on the job', lat: coords?.lat ?? null, lng: coords?.lng ?? null,
+        });
+      }
+    } else if (choice === 'own_car') {
+      // Setting off in a different car: the office hears it on the job itself.
+      // Straight to the event log, not logRideEvent — the passenger's thread is
+      // no place for which car the office had pencilled in.
+      try {
+        await supabase.from('ride_events').insert({
+          ride_id: activeRide.id, actor_id: user.id, actor_role: 'driver',
+          event_type: 'note', direction: 'forward',
+          note: `Started in ${check.shiftReg} — the job was down for ${check.jobReg}`,
+        });
+      } catch (err) {
+        console.warn('Failed to write ride event:', err);
+      }
+    }
+    runJourneyAction('start');
+  };
+
   // Every journey move — forward, back, or an unplanned stop — goes through
   // here, so the ride row, the passenger's trail and the event log can't drift.
   const runJourneyAction = async (key) => {
@@ -1291,7 +1361,8 @@ export default function PlayerPortal() {
     if (key === 'complete') {
       await logRideEvent({
         event_type: 'status_change', from_state: activeRide.status,
-        to_state: 'completed', direction: 'forward'
+        to_state: 'completed', direction: 'forward',
+        ...(hasClears(activeRide) ? { note: 'All clear' } : {})
       });
       await updateRideStatus('completed');
       return;
@@ -2256,13 +2327,49 @@ export default function PlayerPortal() {
         {/* The journey controls. Forward is the required next step; the two
             slim swipes underneath let the driver follow what the passenger
             actually does — take a step back, or log an unplanned stop. */}
+        <StageBand stage={journeyStage(activeRide)} />
         <JourneyControls
           forward={forwardAction(activeRide)}
           back={backAction(activeRide)}
           stepOut={stepOutAction(activeRide)}
+          choices={stopChoices(activeRide)}
           waitingSince={readJourney(activeRide).openStop?.off_at || null}
-          onAction={runJourneyAction}
+          onAction={onJourneyAction}
+          rearm={journeyRearm}
         />
+
+        {/* The car check at Start Journey. */}
+        {carCheck && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 3000, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}
+            onClick={() => resolveCarCheck('cancel')}>
+            <div onClick={e => e.stopPropagation()}
+              style={{ width: '100%', maxWidth: '520px', background: '#FFF', borderRadius: '20px 20px 0 0', padding: '24px 20px calc(24px + env(safe-area-inset-bottom))', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div style={{ fontSize: '0.6875rem', fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', color: '#8A7355' }}>Check your car</div>
+              <div style={{ fontSize: '1.2rem', fontWeight: 700, lineHeight: 1.3 }}>
+                This job is in {carCheck.jobReg}. Are you in it now?
+              </div>
+              <div style={{ fontSize: '0.8125rem', color: '#666', lineHeight: 1.5 }}>
+                {carCheck.shiftReg
+                  ? `Your shift says you are in ${carCheck.shiftReg}.`
+                  : 'There is no car on your shift yet.'}
+              </div>
+              <button onClick={() => resolveCarCheck('job_car')}
+                style={{ padding: '16px', background: '#000', color: '#FFF', border: 'none', borderRadius: '10px', fontWeight: 700, fontSize: '0.8125rem', letterSpacing: '1px', textTransform: 'uppercase', cursor: 'pointer' }}>
+                Yes, I'm in {carCheck.jobReg}
+              </button>
+              {carCheck.shiftReg && (
+                <button onClick={() => resolveCarCheck('own_car')}
+                  style={{ padding: '16px', background: 'transparent', color: '#000', border: '1px solid rgba(0,0,0,0.15)', borderRadius: '10px', fontWeight: 600, fontSize: '0.8125rem', letterSpacing: '1px', textTransform: 'uppercase', cursor: 'pointer' }}>
+                  No, I'm in {carCheck.shiftReg}
+                </button>
+              )}
+              <button onClick={() => resolveCarCheck('cancel')}
+                style={{ padding: '12px', background: 'transparent', color: '#888', border: 'none', fontWeight: 600, fontSize: '0.75rem', cursor: 'pointer' }}>
+                Not yet
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Plans changed. Sits with the journey controls rather than under
             "Problem with this job?", because it is not a problem — it is the
@@ -2840,7 +2947,11 @@ export default function PlayerPortal() {
               );
             })()}
             {renderActiveJob()}
-            {!activeRide && (
+            {/* Between jobs, the driver's own tools — End Shift among them.
+                A job that is only confirmed (tomorrow's, say) still shows as
+                the next job above, but it must not lock the driver out of
+                clocking off: only a job already started does that. */}
+            {!JOB_UNDER_WAY.includes(activeRide?.status) && (
               <motion.div 
                 initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5, duration: 0.6 }}
                 style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '12px' }}
@@ -2910,6 +3021,18 @@ export default function PlayerPortal() {
                       {videoRecorded ? t('vehicleScanSaved') : t('recordWalkAround')}
                     </button>
                   </div>
+                )}
+
+                {/* Change car, and what the shift was spent on between jobs. */}
+                {shiftData.carReg?.trim() && (
+                  <ShiftLog
+                    shiftId={currentShiftId}
+                    driverId={user?.id}
+                    carReg={shiftData.carReg.trim().toUpperCase()}
+                    coords={hasFix && location ? { lat: location[0], lng: location[1] } : null}
+                    onCarChanged={(reg) => setShiftData(prev => ({ ...prev, carReg: reg }))}
+                    haptic={() => triggerHaptic(ImpactStyle.Light)}
+                  />
                 )}
 
                 <motion.button
@@ -3400,6 +3523,26 @@ export default function PlayerPortal() {
                                 <span style={{ ...valueStyle, textAlign: 'right', maxWidth: '62%' }}>{String(value)}</span>
                               </div>
                             ))}
+
+                            {/* What happened, step by step — the same log the office reads. */}
+                            {tripSteps[trip.id]?.length > 0 && (
+                              <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid rgba(0,0,0,0.06)' }}>
+                                <div style={{ ...labelStyle, marginBottom: '8px' }}>Journey</div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                  {tripSteps[trip.id].map(step => {
+                                    const corrected = step.event_type === 'step_reverted' || step.direction === 'back';
+                                    return (
+                                      <div key={step.id} style={{ display: 'flex', gap: '10px', fontSize: '0.8125rem', lineHeight: 1.4 }}>
+                                        <span style={{ color: '#8A7355', fontWeight: 600, minWidth: '40px', fontVariantNumeric: 'tabular-nums' }}>
+                                          {new Date(step.occurred_at).toLocaleTimeString('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hour12: false })}
+                                        </span>
+                                        <span style={{ color: corrected ? '#888' : '#000' }}>{describeEvent(step)}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
 
                             <textarea
                               value={tripNote}
