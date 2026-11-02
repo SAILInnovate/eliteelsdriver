@@ -314,6 +314,17 @@ const VideoRecorderOverlay = ({ userId, onUploadComplete, onClose }) => {
     return null;
   };
 
+// The service the way the dashboard words it. The desk's Wait & return chip in
+// Dispatch (metadata.direction) wins over the service the job was booked as.
+function serviceLabel(ride) {
+  const svc = ride?.service_type || ride?.metadata?.service_type;
+  if (svc === 'as_directed') return 'AS DIRECTED';
+  if (svc === 'by_the_hour') return 'HOURLY';
+  const dir = String(ride?.metadata?.direction || '').toUpperCase();
+  if (dir === 'WR' || (!dir && svc === 'wait_and_return')) return 'WAIT & RETURN';
+  return 'ONE WAY';
+}
+
 export default function PlayerPortal() {
   const keyboardOverlap = useKeyboardOverlap();
   const { user, signOut } = useAuth();
@@ -2119,7 +2130,7 @@ export default function PlayerPortal() {
             {isDispatched ? 'Job Assigned' : isEnRoute ? 'En Route to Client' : isArrived ? 'Client Approaching' : 'Journey in Progress'}
           </span>
           <span style={{ marginLeft: 'auto', fontSize: '0.625rem', letterSpacing: '2px', color: '#444', textTransform: 'uppercase' }}>
-            {activeRide.service_type === 'by_the_hour' ? 'HOURLY' : 'ONE WAY'}
+            {serviceLabel(activeRide)}
           </span>
         </div>
 
